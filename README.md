@@ -1,0 +1,78 @@
+# LoreWeaver
+
+LoreWeaver is an LLM-driven analysis engine for long-form fictional worlds. The current implementation is starting with Milestone 1: single-book ingestion and evidence-grounded question answering.
+
+## Current Stage
+
+M1.0 is the project bootstrap stage. It provides:
+
+- Python package skeleton
+- CLI entry point
+- centralized configuration files
+- data directory layout
+- first raw sample registration
+- run id and logging helpers
+
+The first test sample is:
+
+```text
+data/raw/DawnSword_Chapter_1_260.txt
+```
+
+## Quick Start
+
+Run the CLI directly from the workspace:
+
+```bash
+python3 -m loreweaver.cli --help
+python3 -m loreweaver.cli status
+```
+
+After installing the package, the same CLI will be available as:
+
+```bash
+loreweaver --help
+loreweaver status
+```
+
+## M1 Command Surface
+
+The command surface is intentionally created before the full pipeline is implemented:
+
+```bash
+loreweaver ingest
+loreweaver windows
+loreweaver extract
+loreweaver index
+loreweaver graph
+loreweaver retrieve
+loreweaver ask
+loreweaver eval
+```
+
+Each command currently reports its run id and implementation status. The next substage, M1.1, will implement `ingest`.
+
+## Data Directories
+
+```text
+data/raw/          source text files
+data/normalized/   normalized canonical text files
+data/runs/         command run outputs and diagnostics
+data/indexes/      generated vector/BM25/local indexes
+data/eval/         evaluation questions and reports
+```
+
+Generated artifacts should include a `document_id` or `run_id` so they can be inspected and reproduced.
+
+## Configuration
+
+Main configuration lives in:
+
+```text
+configs/default.yaml
+configs/models.yaml
+configs/storage.yaml
+```
+
+Copy `.env.example` to `.env` when model or database credentials are needed.
+

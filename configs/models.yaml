@@ -1,0 +1,21 @@
+providers:
+  openai:
+    api_key_env: "OPENAI_API_KEY"
+
+models:
+  extraction:
+    provider: "openai"
+    name: "gpt-4o-mini"
+    temperature: 0
+  qa:
+    provider: "openai"
+    name: "gpt-4o"
+    temperature: 0
+  embedding:
+    provider: "openai"
+    name: "text-embedding-3-small"
+  reranker:
+    provider: "local"
+    name: "BAAI/bge-reranker-v2-m3"
+    enabled: false
+

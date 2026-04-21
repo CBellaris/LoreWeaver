@@ -1,0 +1,17 @@
+sqlite:
+  path: "data/runs/loreweaver_m1.sqlite3"
+
+qdrant:
+  url_env: "QDRANT_URL"
+  api_key_env: "QDRANT_API_KEY"
+  collection_prefix: "loreweaver"
+
+neo4j:
+  uri_env: "NEO4J_URI"
+  username_env: "NEO4J_USERNAME"
+  password_env: "NEO4J_PASSWORD"
+  enabled: false
+
+bm25:
+  index_dir: "data/indexes"
+

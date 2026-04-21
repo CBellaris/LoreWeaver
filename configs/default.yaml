@@ -1,0 +1,56 @@
+project:
+  name: "LoreWeaver"
+  stage: "M1.0"
+  data_dir: "data"
+
+sample:
+  title: "黎明之剑"
+  author: "远瞳"
+  source_path: "data/raw/DawnSword_Chapter_1_260.txt"
+  note: "M1 test source. M1.1 may restrict the first ingestion run to a smaller chapter range."
+
+ingest:
+  normalize_newlines: true
+  remove_extra_blank_lines: true
+  chapter_patterns:
+    - "^第[一二三四五六七八九十百千万0-9]+章"
+    - "^Chapter\\s+[0-9]+"
+    - "^【 第 [0-9]+ 部分 】"
+
+window:
+  size_chars: 1200
+  overlap_ratio: 0.2
+  min_chars: 300
+  max_chars: 1600
+
+extraction:
+  model: "gpt-4o-mini"
+  temperature: 0
+  max_retries: 2
+  quote_min_chars: 30
+  quote_max_chars: 160
+
+locator:
+  fuzzy_threshold: 0.86
+  search_scope: "window_first"
+
+retrieval:
+  graph_cluster_top_k: 4
+  graph_span_per_cluster: 12
+  vector_top_k: 30
+  bm25_top_k: 30
+  union_max_candidates: 80
+  rerank_top_k: 15
+
+evidence:
+  pre_context_chars: 300
+  post_context_chars: 500
+  merge_gap_chars: 500
+  max_evidence_chars: 40000
+  max_blocks: 12
+
+qa:
+  model: "gpt-4o"
+  temperature: 0
+  require_citations: true
+

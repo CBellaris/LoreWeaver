@@ -1,0 +1,2181 @@
+# LoreWeaver Milestone 1 详细落地计划
+
+版本：v0.1 计划稿  
+阶段代号：M1 - 单书建库与证据问答  
+目标周期：建议 3-5 周，按个人开发节奏可拉长  
+阶段定位：把 LoreWeaver 从概念计划推进为一条可运行、可复盘、可验收的最小闭环
+
+项目文档链接：[LoreWeaver.md](/LoreWeaver.md)
+
+---
+
+## 1. Milestone 1 总目标
+
+Milestone 1 的目标不是一次性完成完整的“世界观分析引擎”，而是先跑通首个可信闭环：
+
+> 对一份 3-5 万字的连续文本样本，完成原文入库、章节切分、Span 抽取、引用定位、向量/BM25/图索引写入、混合召回、证据区间合并，并最终支持带原文引用的宏观问答。
+
+M1 完成后，系统应该能回答类似问题：
+
+- “这个势力与主角的关系如何变化？”
+- “故事中力量体系目前有哪些明确规则？”
+- “某个地点在剧情中承担了什么作用？”
+- “哪些事件暗示了某个隐藏设定？”
+
+回答不要求像最终产品一样优雅，但必须做到：
+
+- 能说明证据来自哪些章节或原文区间；
+- 关键判断能附带原文引用；
+- 证据不足时能明确说“不足以确认”；
+- 建库、召回、回答链路可以重复运行和调试。
+
+---
+
+## 2. M1 产品边界
+
+### 2.1 必做范围
+
+M1 只服务于“单书、单样本、离线建库、在线证据问答”。
+
+必须完成：
+
+- 支持导入一个 `.txt` 文本样本；
+- 识别章节边界并建立全局字符坐标；
+- 将章节文本切成带重叠的候选窗口；
+- 调用 LLM 对窗口做结构化抽取；
+- 用程序反查 `exact_text_quote`，生成可信坐标；
+- 将 Span 元数据写入工程数据库；
+- 建立摘要向量索引；
+- 建立 BM25 关键词索引；
+- 建立最小中心 Span 图骨架；
+- 实现图召回、向量召回、BM25 召回的 Union 合并；
+- 接入 Reranker 或预留可替换精排接口；
+- 合并证据区间，切出原文证据包；
+- 生成带引用的回答；
+- 保存每次查询的证据包与调试记录；
+- 建立最小评估集并跑通人工验收。
+
+### 2.2 明确不做
+
+M1 不做以下内容：
+
+- 不做完整 Web UI；
+- 不做多用户系统；
+- 不做通用知识图谱平台；
+- 不做全自动“概念锻造炉”；
+- 不做全书百万字规模优化；
+- 不做复杂 Agent 调度；
+- 不追求 Neo4j 可视化炫技；
+- 不承诺任意问题都有答案；
+- 不做报告生成主链路，报告放到 M2。
+
+### 2.3 M1 的成功定义
+
+M1 成功的标志是：即使界面只有 CLI，系统也能稳定完成一次完整链路：
+
+```text
+txt 样本
+  -> 章节切分
+  -> 候选窗口
+  -> LLM 抽取
+  -> 引用定位
+  -> Span 入库
+  -> 向量/BM25/图索引
+  -> 用户问题
+  -> 混合召回
+  -> Rerank
+  -> 原文证据包
+  -> 带引用回答
+  -> 评估记录
+```
+
+---
+
+## 3. M1 核心设计原则
+
+### 3.1 原文坐标是系统地基
+
+任何摘要、聚合、回答都不作为最终事实来源。最终可信依据只能来自：
+
+- `document_id`
+- `chapter_id`
+- `start_idx`
+- `end_idx`
+- 原文切片内容
+
+模型不得直接写入最终可信坐标。模型只输出 `exact_text_quote`，程序负责反查定位。
+
+### 3.2 先做可复盘，再做智能化
+
+M1 每一步都必须能落盘：
+
+- 每个窗口为什么生成某个 Span；
+- 每个 quote 是否定位成功；
+- 每条召回结果来自图、向量还是 BM25；
+- Reranker 为什么保留某些候选；
+- 最终证据包包含哪些原文区间；
+- 回答引用对应哪些证据块。
+
+只要一次回答质量不好，必须能追到是抽取、定位、召回、精排、合并还是生成环节出了问题。
+
+### 3.3 图结构先轻后重
+
+M1 必须有图，但只做最小骨架：
+
+- `Span`
+- `CenterSpanCluster`
+- `Entity`
+- `SUPPORTS`
+- `RELATED_TO`
+- `MENTIONS_ENTITY`
+- `ADJACENT_CHAPTER`
+
+不急着做复杂实体关系、不急着追求全自动聚类。中心 Span 可以人工指定，重点是验证“图召回能否帮助宏观问题组织证据”。
+
+### 3.4 多路召回是主链路，不是锦上添花
+
+M1 的在线查询必须默认执行：
+
+- 图召回；
+- 向量召回；
+- BM25 召回；
+- Union 去重；
+- Reranker 精排；
+- 坐标扩展与合并。
+
+任何单路召回都只能作为降级模式，不能成为默认模式。
+
+### 3.5 每个子阶段都要能独立验收
+
+M1 拆成 10 个子阶段。每个子阶段都必须定义：
+
+- 输入；
+- 输出；
+- 开发任务；
+- 验收方法；
+- 常见失败；
+- 进入下一阶段的门槛。
+
+从 M1.0 开始，每完成一个子阶段，都必须在对应阶段定义内追加 `### 验收记录` 小节。验收记录至少包含：
+
+- 完成日期；
+- 实际完成内容；
+- 关键产物路径；
+- 执行过的验证命令；
+- 验收结论；
+- 遗留问题或进入下一阶段的注意事项。
+
+后续阶段不得只在对话中口头说明完成情况，必须把验收结果沉淀回本文档。
+
+这样可以避免“所有模块都写了一点，但没有任何一段能确认可用”。
+
+---
+
+## 4. 推荐工程结构
+
+M1 阶段建议先采用 Python CLI 项目结构：
+
+```text
+LoreWeaver/
+  LoreWeaver.md
+  LoreWeaver_Milestone_1.md
+  pyproject.toml
+  README.md
+  .env.example
+  configs/
+    default.yaml
+    models.yaml
+    storage.yaml
+  data/
+    raw/
+    normalized/
+    runs/
+    indexes/
+    eval/
+  loreweaver/
+    __init__.py
+    cli.py
+    config.py
+    logging.py
+    models/
+      document.py
+      chapter.py
+      span.py
+      cluster.py
+      evidence.py
+    ingest/
+      reader.py
+      normalizer.py
+      chapter_splitter.py
+      window_splitter.py
+    extraction/
+      schemas.py
+      prompts.py
+      extractor.py
+      locator.py
+      retry.py
+    storage/
+      sqlite_store.py
+      qdrant_store.py
+      bm25_store.py
+      neo4j_store.py
+    graph/
+      center_span.py
+      edge_builder.py
+    retrieval/
+      query_router.py
+      graph_retriever.py
+      vector_retriever.py
+      bm25_retriever.py
+      union.py
+      reranker.py
+    evidence/
+      interval.py
+      assembler.py
+      citation.py
+    qa/
+      answerer.py
+      prompts.py
+    eval/
+      question_set.py
+      runner.py
+      metrics.py
+  tests/
+    fixtures/
+    unit/
+    integration/
+```
+
+说明：
+
+- `data/raw/` 存原始文本；
+- `data/normalized/` 存规范化后的文本；
+- `data/runs/` 存每次建库与查询的运行记录；
+- `data/indexes/` 存 BM25、本地缓存、临时索引；
+- `data/eval/` 存问题集、人工评分、评测输出；
+- `loreweaver/models/` 只放 Pydantic 数据模型；
+- `loreweaver/storage/` 封装存储后端，避免业务逻辑直接依赖数据库 SDK。
+
+---
+
+## 5. 数据对象冻结版
+
+M1 可以允许字段扩展，但核心对象和主键应尽早稳定。
+
+### 5.1 Document
+
+```text
+document_id: str
+title: str
+author: str | None
+source_path: str
+normalized_path: str
+total_chars: int
+total_chapters: int
+content_hash: str
+created_at: datetime
+```
+
+验收要求：
+
+- 同一份文本重复导入时，`content_hash` 应一致；
+- 原文坐标必须基于 `normalized_path` 对应内容；
+- 不允许后续流程混用 raw 文本坐标和 normalized 文本坐标。
+
+### 5.2 Chapter
+
+```text
+chapter_id: str
+document_id: str
+chapter_index: int
+chapter_title: str
+start_idx: int
+end_idx: int
+char_count: int
+```
+
+验收要求：
+
+- 所有章节区间不重叠；
+- 章节按 `chapter_index` 连续；
+- `text[start_idx:end_idx]` 必须能切出章节原文；
+- 章节总覆盖率应接近 100%，允许少量前言、目录、尾声作为特殊章节。
+
+### 5.3 CandidateWindow
+
+```text
+window_id: str
+document_id: str
+chapter_id: str
+window_index: int
+window_start: int
+window_end: int
+text: str
+```
+
+验收要求：
+
+- 每个窗口必须落在单一章节内；
+- 相邻窗口有配置化重叠；
+- 窗口坐标必须可直接回切原文；
+- 窗口不是最终知识单元，只是抽取输入。
+
+### 5.4 Span
+
+```text
+span_id: str
+document_id: str
+chapter_id: str
+window_id: str
+window_start: int
+window_end: int
+summary: str
+entities: list[str]
+topics: list[str]
+salience_score: float
+exact_text_quote: str
+quote_start_idx: int | None
+quote_end_idx: int | None
+locator_confidence: float
+locator_status: str
+created_at: datetime
+```
+
+`locator_status` 建议枚举：
+
+- `exact_match`
+- `fuzzy_match`
+- `multi_match_resolved`
+- `failed`
+- `manual_required`
+
+验收要求：
+
+- `locator_status=failed` 的 Span 不进入主检索索引；
+- `quote_start_idx` 和 `quote_end_idx` 必须基于 normalized 全文；
+- `exact_text_quote` 不宜过长，建议 30-160 中文字符；
+- `salience_score` 保留模型评分，但不能单独决定事实可信度。
+
+### 5.5 CenterSpanCluster
+
+```text
+cluster_id: str
+document_id: str
+center_span_id: str
+cluster_name: str
+cluster_type: str
+summary: str
+member_span_ids: list[str]
+confidence: float
+status: str
+created_at: datetime
+```
+
+`cluster_type` 首版限定为：
+
+- `character`
+- `faction`
+- `location`
+- `power_system`
+- `history`
+- `mystery`
+
+验收要求：
+
+- M1 至少完成 2 个、建议完成 4 个中心 Span Cluster；
+- 每个 Cluster 至少包含 5 个成员 Span；
+- 每个成员 Span 必须能解释为什么归属该 Cluster；
+- Cluster 进入问答主链路，而不是只存在于数据库里。
+
+### 5.6 SpanEdge
+
+```text
+edge_id: str
+document_id: str
+from_id: str
+to_id: str
+from_type: str
+to_type: str
+edge_type: str
+weight: float
+source: str
+created_at: datetime
+```
+
+`edge_type` 首版限定为：
+
+- `SUPPORTS`
+- `RELATED_TO`
+- `MENTIONS_ENTITY`
+- `ADJACENT_CHAPTER`
+
+`source` 建议枚举：
+
+- `rule`
+- `manual`
+- `llm`
+- `imported`
+
+验收要求：
+
+- M1 中 `manual` 和 `rule` 边优先；
+- LLM 生成边必须经过可解释理由或人工确认；
+- 每类边至少有查询或调试方法能查看。
+
+### 5.7 QueryEvidencePack
+
+```text
+query_id: str
+document_id: str
+user_question: str
+query_type: str
+retrieved_span_ids: list[str]
+cluster_ids: list[str]
+merged_intervals: list[dict]
+evidence_blocks: list[dict]
+retrieval_sources: dict
+rerank_scores: dict
+token_estimate: int
+answer: str | None
+created_at: datetime
+```
+
+验收要求：
+
+- 每次问答都必须落盘 Evidence Pack；
+- Evidence Pack 必须能复现最终送入模型的证据内容；
+- 回答中的引用编号必须能映射回 `evidence_blocks`。
+
+---
+
+## 6. M1 子阶段拆分
+
+## M1.0 项目骨架与样本锁定
+
+### 目标
+
+建立最小工程骨架，选定第一份测试文本，并冻结 M1 的配置入口、目录约定和开发命令。
+
+### 输入
+
+- `LoreWeaver.md`
+- 一份 3-5 万字连续文本样本；
+- OpenAI 或其他 LLM API 凭据；
+- 本地 Python 环境；
+- 可选：Qdrant、Neo4j、本地 Reranker 环境。
+
+### 输出
+
+- Python 项目骨架；
+- 配置文件；
+- `.env.example`；
+- 第一份样本文本；
+- 最小 README；
+- M1 开发命令清单。
+
+### 任务拆分
+
+1. 初始化 Python 项目。
+2. 确定依赖管理方式，建议使用 `uv` 或 `poetry`。
+3. 建立 `configs/default.yaml`。
+4. 建立 `data/` 目录结构。
+5. 放入第一份样本文本到 `data/raw/`。
+6. 创建最小 CLI：
+
+```text
+loreweaver ingest
+loreweaver extract
+loreweaver index
+loreweaver graph
+loreweaver ask
+loreweaver eval
+```
+
+7. 建立基础日志格式，所有命令输出 `run_id`。
+
+### 设计思路
+
+M1 不应先写复杂服务端。CLI 更适合前期调试离线流水线。等 M1 闭环跑通后，M2/M3 再决定是否加 FastAPI 或 UI。
+
+配置必须集中化，尤其是：
+
+- 窗口大小；
+- 窗口重叠；
+- 抽取模型；
+- embedding 模型；
+- top-k 参数；
+- token 预算；
+- 数据库连接；
+- 是否启用 Neo4j；
+- 是否启用真实 Reranker。
+
+### 独立验收
+
+- 运行 `loreweaver --help` 能看到所有命令；
+- 运行任一命令都会生成 `run_id`；
+- 样本文本路径能被配置读取；
+- 项目能通过基础 import 测试；
+- README 说明如何准备 `.env` 和运行第一条命令。
+
+### 常见失败与处理
+
+- 依赖还未确定：先冻结最小依赖，不要提前引入重型框架；
+- 数据目录混乱：所有生成物必须带 `document_id` 或 `run_id`；
+- 配置分散：任何超参数不得硬编码在业务逻辑深处。
+
+### 进入下一阶段门槛
+
+项目骨架可运行，样本文本已锁定，配置系统可读取。
+
+### 验收记录
+
+完成日期：2026-04-21
+
+验收结论：M1.0 已完成，可以进入 M1.1。
+
+实际完成内容：
+
+- 建立 Python 项目骨架；
+- 建立 `loreweaver/` 包结构；
+- 建立 M1 各阶段模块占位；
+- 建立 CLI 入口；
+- 建立集中配置文件；
+- 建立数据目录结构；
+- 建立环境变量模板；
+- 建立最小 README；
+- 锁定第一份测试文本；
+- 确认基础命令可运行并输出 `run_id`。
+
+关键产物：
+
+- `pyproject.toml`
+- `README.md`
+- `.env.example`
+- `.gitignore`
+- `configs/default.yaml`
+- `configs/models.yaml`
+- `configs/storage.yaml`
+- `loreweaver/cli.py`
+- `loreweaver/config.py`
+- `loreweaver/logging.py`
+- `loreweaver/models/`
+- `loreweaver/ingest/`
+- `loreweaver/extraction/`
+- `loreweaver/storage/`
+- `loreweaver/graph/`
+- `loreweaver/retrieval/`
+- `loreweaver/evidence/`
+- `loreweaver/qa/`
+- `loreweaver/eval/`
+- `tests/`
+- `data/raw/DawnSword_Chapter_1_260.txt`
+
+样本文本记录：
+
+- 原始测试文件：`DawnSword_Chapter_1_260.txt`
+- 已复制到：`data/raw/DawnSword_Chapter_1_260.txt`
+- 文件大小：`2625682 bytes`
+- 说明：该样本覆盖《黎明之剑》第 1 章到第 260 章，体量大于 M1 首轮建议的 3-5 万字。M1.1 实现真实入库时，可以先支持完整文件读取，同时允许通过配置限制首轮建库章节范围，避免早期抽取成本失控。
+
+已执行验证命令：
+
+```bash
+python3 -m loreweaver.cli --help
+python3 -m loreweaver.cli status
+python3 -m loreweaver.cli ingest --source data/raw/DawnSword_Chapter_1_260.txt
+python3 -m compileall loreweaver
+```
+
+验证结果：
+
+- `--help` 能看到 `status / ingest / windows / extract / index / graph / retrieve / ask / eval` 命令；
+- `status` 能读取 `configs/default.yaml`；
+- `status` 能确认 `data/raw/DawnSword_Chapter_1_260.txt` 存在；
+- `status` 输出 `bootstrap: ok`；
+- 占位 `ingest` 命令能输出 `run_id`，并保留后续阶段将要使用的参数；
+- `python3 -m compileall loreweaver` 通过，当前 Python 模块无语法错误；
+- 当前环境未安装 `PyYAML`，因此已在 `loreweaver/config.py` 中提供 M1.0 轻量 YAML fallback，保证未安装依赖时基础命令仍可运行。
+
+遗留问题与 M1.1 注意事项：
+
+- 当前 `ingest / windows / extract / index / graph / retrieve / ask / eval` 仍是占位命令，M1.1 开始需要逐步替换为真实实现；
+- 当前尚未建立 SQLite 表，M1.1 需要实现 `Document / Chapter` 落盘；
+- 当前样本文本较大，M1.1 需要支持首轮限制章节范围；
+- 当前仓库没有 git 初始化记录，本次验收基于工作区文件状态。
+
+---
+
+## M1.1 文本入库、规范化与章节切分
+
+### 目标
+
+把原始 `.txt` 转换成唯一可信的 normalized 文本，并建立章节坐标表。
+
+### 输入
+
+- `data/raw/<sample>.txt`
+- 章节识别规则配置。
+
+### 输出
+
+- `data/normalized/<document_id>.txt`
+- `Document` 记录；
+- `Chapter` 记录；
+- 入库报告。
+
+### 任务拆分
+
+1. 实现文本读取，统一编码为 UTF-8。
+2. 规范化换行符。
+3. 清理明显噪声：
+   - 多余空白；
+   - 连续空行；
+   - 页面广告；
+   - 重复标题；
+   - 非正文尾巴。
+4. 实现章节识别：
+   - 支持 `第x章`；
+   - 支持 `Chapter x`；
+   - 支持手工 fallback：按固定长度伪章节切分。
+5. 为每章记录全局 `[start_idx, end_idx]`。
+6. 生成 `content_hash`。
+7. 将 `Document`、`Chapter` 写入 SQLite。
+8. 输出入库报告：
+   - 总字符数；
+   - 章节数；
+   - 最短章节；
+   - 最长章节；
+   - 章节边界异常；
+   - 文本清理前后字符差异。
+
+### 设计思路
+
+normalized 文本是 M1 的 Layer 0。之后所有坐标都必须基于 normalized 文本，不能再引用 raw 文本坐标。
+
+章节切分不要追求一次支持所有小说格式。M1 的优先级是样本稳定，规则可配置，异常可发现。
+
+### 独立验收
+
+- 能导入一份 3-5 万字样本；
+- `Document.total_chars` 与 normalized 文本长度一致；
+- 每个 `Chapter` 区间可准确切回原文；
+- 章节区间按顺序排列且不重叠；
+- 入库报告能指出异常章节；
+- 重复导入同一文本不会生成冲突记录。
+
+### 建议测试
+
+- 单章文本；
+- 多章文本；
+- 没有标准章节标题的文本；
+- 含连续空行的文本；
+- 含中英文章节标题的文本。
+
+### 常见失败与处理
+
+- 章节标题误识别正文：加入标题行长度、位置、前后换行约束；
+- 清洗导致坐标不可追踪：M1 只保留 normalized 坐标，不做 raw-to-normalized 映射；
+- 样本章节太短：允许合并过短章节或 fallback 为伪章节。
+
+### 进入下一阶段门槛
+
+样本文本能稳定生成 `Document` 与 `Chapter`，且章节坐标人工抽查无误。
+
+---
+
+## M1.2 候选窗口切分
+
+### 目标
+
+将章节切成可供 LLM 抽取的候选窗口，同时保留全局坐标。
+
+### 输入
+
+- normalized 文本；
+- Chapter 表；
+- 窗口配置。
+
+### 输出
+
+- CandidateWindow 列表；
+- 窗口切分报告。
+
+### 推荐参数
+
+中文样本初始参数：
+
+```text
+window_size_chars: 1200
+overlap_ratio: 0.2
+min_window_chars: 300
+max_window_chars: 1600
+```
+
+### 任务拆分
+
+1. 按章节遍历文本。
+2. 对每章做滑动窗口切分。
+3. 窗口不得跨章节。
+4. 对最后一个过短窗口做合并或保留策略。
+5. 每个窗口保存：
+   - `window_id`
+   - `chapter_id`
+   - `window_start`
+   - `window_end`
+   - `window_index`
+6. 输出统计：
+   - 总窗口数；
+   - 每章窗口数；
+   - 平均窗口长度；
+   - 重叠比例；
+   - 过短窗口数量。
+
+### 设计思路
+
+候选窗口只是抽取输入。它的任务是保证 LLM 看到足够上下文，而不是成为最终证据粒度。
+
+重叠窗口会造成重复 Span，这是可接受的。后续通过 quote 定位、区间合并和去重处理。
+
+### 独立验收
+
+- 每个窗口都能从 normalized 文本中准确切出；
+- 所有窗口都落在对应章节边界内；
+- 重叠比例符合配置；
+- 窗口数量在合理范围内；
+- 对 3-5 万字样本，窗口数大约在 30-60 个左右，具体取决于章节长度。
+
+### 建议测试
+
+- 极短章节；
+- 超长章节；
+- 章节长度刚好等于窗口大小；
+- 最后一段不足 `min_window_chars`。
+
+### 常见失败与处理
+
+- 窗口跨章：强制按章节独立切分；
+- 末尾窗口过短：并入前一个窗口；
+- 重叠导致抽取成本过高：优先调小 overlap，而不是调大窗口到失控。
+
+### 进入下一阶段门槛
+
+窗口坐标全部可回切，窗口报告无明显异常。
+
+---
+
+## M1.3 结构化抽取与引用定位
+
+### 目标
+
+对每个候选窗口抽取 Span 元数据，并通过程序定位 `exact_text_quote` 的全局坐标。
+
+### 输入
+
+- CandidateWindow；
+- 抽取 Prompt；
+- Pydantic Schema；
+- LLM API。
+
+### 输出
+
+- Span 记录；
+- 定位结果；
+- 抽取失败队列；
+- 定位失败队列；
+- 抽取质量报告。
+
+### 抽取 Schema
+
+模型输出必须符合结构化格式：
+
+```text
+summary: str
+entities: list[str]
+topics: list[str]
+salience_score: float
+exact_text_quote: str
+```
+
+字段约束：
+
+- `summary`：1-3 句，不写泛泛而谈；
+- `entities`：人物、地点、势力、物品、特殊术语；
+- `topics`：更抽象的主题，如权力斗争、魔法规则、地理线索；
+- `salience_score`：0-1；
+- `exact_text_quote`：必须原样来自窗口，长度建议 30-160 中文字符。
+
+### 任务拆分
+
+1. 编写抽取 Prompt。
+2. 定义 Pydantic Schema。
+3. 实现 LLM 调用封装。
+4. 支持 temperature=0。
+5. 对窗口逐个抽取。
+6. 实现失败重试：
+   - JSON 格式错误；
+   - 字段缺失；
+   - quote 为空；
+   - quote 明显不在窗口中。
+7. 实现 quote 精确匹配。
+8. 实现局部模糊匹配。
+9. 实现多命中消歧：
+   - 优先落在当前窗口；
+   - 优先靠近窗口中心；
+   - 优先匹配分最高；
+   - 保留所有候选到调试日志。
+10. 写入 Span 表。
+11. 定位失败的 Span 标记为 `failed`，不进入主索引。
+
+### 设计思路
+
+这一步是 M1 的第一道高危点。绝不能相信模型坐标，也不能把“模型说这段在第几章”当作事实。
+
+可靠链路应该是：
+
+```text
+窗口原文
+  -> LLM 摘要与短引
+  -> 程序在窗口内查 quote
+  -> 程序映射到 normalized 全文坐标
+  -> 落盘 locator_status 与 locator_confidence
+```
+
+### 定位策略
+
+第一层：精确匹配。
+
+```text
+window_text.find(exact_text_quote)
+```
+
+第二层：轻清洗后匹配。
+
+- 去掉多余空白；
+- 统一中文/英文引号；
+- 统一省略号；
+- 统一全角/半角空格。
+
+第三层：模糊匹配。
+
+- 使用相似度算法；
+- 仅在当前窗口附近搜索；
+- 分数低于阈值则失败。
+
+### 独立验收
+
+- 对样本窗口完成抽取；
+- 结构化输出成功率 >= 95%；
+- quote 定位成功率 >= 90%；
+- `failed` Span 不进入后续主索引；
+- 随机抽查 20 条 Span，坐标切片与 quote 对应；
+- 每条失败记录能看到失败原因。
+
+### 建议测试
+
+- quote 精确存在；
+- quote 中含换行；
+- quote 中含引号；
+- quote 在窗口中出现多次；
+- 模型改写 quote；
+- 模型输出太长 quote。
+
+### 常见失败与处理
+
+- 模型喜欢转述而非原文引用：Prompt 强调必须逐字引用，并在失败时自动重试；
+- quote 太短导致多命中：设置最小长度；
+- quote 太长导致微小差异无法匹配：设置最大长度；
+- LLM 成本过高：先用 10 个窗口做小样本调试，再全量跑。
+
+### 进入下一阶段门槛
+
+Span 抽取和定位稳定，定位成功的 Span 能够作为后续索引输入。
+
+---
+
+## M1.4 元数据存储、向量索引与 BM25 索引
+
+### 目标
+
+将定位成功的 Span 写入结构化元数据库、向量库和关键词索引，形成最小可检索底座。
+
+### 输入
+
+- 定位成功的 Span；
+- embedding 模型；
+- Qdrant 配置；
+- BM25 存储配置。
+
+### 输出
+
+- SQLite 元数据库；
+- Qdrant collection；
+- BM25 索引文件；
+- 索引构建报告。
+
+### 任务拆分
+
+1. 建立 SQLite 表：
+   - documents；
+   - chapters；
+   - windows；
+   - spans；
+   - extraction_runs；
+   - locator_failures；
+   - query_runs。
+2. 实现 Span 写入与查询。
+3. 选择 embedding 输入：
+   - M1 默认使用 `summary + entities + topics`；
+   - 可选加入 `exact_text_quote`。
+4. 批量生成 embedding。
+5. 写入 Qdrant：
+   - vector；
+   - `span_id`；
+   - `document_id`；
+   - `chapter_id`；
+   - `salience_score`；
+   - `entities`；
+   - `topics`；
+   - `quote_start_idx`；
+   - `quote_end_idx`。
+6. 建立 BM25 文档：
+   - `summary`；
+   - `entities`；
+   - `topics`；
+   - `exact_text_quote`。
+7. 保存 BM25 索引到 `data/indexes/`。
+8. 实现最小检索命令：
+
+```text
+loreweaver search-vector "问题"
+loreweaver search-bm25 "问题"
+```
+
+### 设计思路
+
+M1 的索引层要避免“存了但不可查”。每种索引都必须有单独调试入口。
+
+向量检索擅长语义相似，BM25 擅长专有名词和术语召回。二者都不能替代原文证据，只用于找到 Span 坐标。
+
+### 独立验收
+
+- SQLite 中 Span 数量与定位成功数量一致；
+- Qdrant collection 中点数量与定位成功 Span 数量一致；
+- BM25 索引能持久化并重新加载；
+- 给定实体名，BM25 能召回含该实体的 Span；
+- 给定抽象主题，向量检索能召回语义相关 Span；
+- 检索结果能回查到原文 quote。
+
+### 建议测试
+
+- 空实体；
+- 重复 Span；
+- embedding API 失败；
+- Qdrant 连接失败；
+- BM25 重建；
+- 索引与 SQLite 数量不一致。
+
+### 常见失败与处理
+
+- embedding 输入太短：拼接 summary、entities、topics；
+- BM25 中文分词效果差：先用简单分词跑通，再替换更好的中文分词；
+- Qdrant 与 SQLite 不一致：每次索引构建记录 `run_id`，并做数量校验。
+
+### 进入下一阶段门槛
+
+向量与 BM25 都能独立检索，检索结果可以回查原文坐标。
+
+---
+
+## M1.5 最小中心 Span 图骨架
+
+### 目标
+
+建立 M1 的轻量图结构，让系统具备“从宏观主题下钻到底层 Span”的能力。
+
+### 输入
+
+- 定位成功的 Span；
+- 高 salience Span；
+- 人工指定的聚类方向；
+- Neo4j 配置。
+
+### 输出
+
+- 2-4 个 CenterSpanCluster；
+- 对应成员 Span；
+- 显式边；
+- 图构建报告。
+
+### 推荐 M1 聚类方向
+
+从样本文本中选择最明显的 2-4 类：
+
+- 主角相关关系；
+- 核心势力；
+- 关键地点；
+- 力量体系；
+- 历史事件；
+- 悬疑/异常现象。
+
+不要为了凑类型硬建 Cluster。宁愿少而准。
+
+### 任务拆分
+
+1. 实现高 salience Span 列表查看命令：
+
+```text
+loreweaver spans --top-salience 30
+```
+
+2. 人工挑选中心 Span。
+3. 为每个中心 Span 填写：
+   - `cluster_name`
+   - `cluster_type`
+   - `summary`
+4. 召回候选成员 Span：
+   - 向量相似；
+   - 共享实体；
+   - BM25 命中；
+   - 同章或邻近章节。
+5. 生成候选成员列表。
+6. 人工确认或规则过滤成员。
+7. 写入 CenterSpanCluster。
+8. 写入边：
+   - Center -> Span: `SUPPORTS`
+   - Span -> Entity: `MENTIONS_ENTITY`
+   - Span -> Span: `RELATED_TO`
+   - Chapter -> Chapter: `ADJACENT_CHAPTER`
+9. 同步写入 Neo4j。
+10. 保留 SQLite mirror 或导出文件用于调试。
+
+### 设计思路
+
+M1 的图不是“知识图谱完成品”，而是宏观检索的导航骨架。
+
+中心 Span 不是真理，只是索引锚点。它的价值在于：
+
+- 让宏观问题先命中主题框架；
+- 顺着显式边找到一批底层证据；
+- 与向量/BM25 形成互补；
+- 为 M2 的报告结构提供雏形。
+
+### 独立验收
+
+- 至少有 2 个 CenterSpanCluster；
+- 每个 Cluster 至少有 5 个成员 Span；
+- 每个 Cluster 能解释成员归属；
+- Neo4j 中可以查到 Cluster、Span 和边；
+- CLI 能按 cluster 查看成员和引用；
+- 后续问答能实际使用 Cluster。
+
+### 建议测试
+
+- 中心 Span 被删除或定位失败；
+- 成员 Span 重复归属多个 Cluster；
+- Cluster 无成员；
+- Neo4j 不可用；
+- 人工配置格式错误。
+
+### 常见失败与处理
+
+- 中心 Span 代表性不足：允许人工替换，并记录替换历史；
+- 成员过杂：先用共享实体和类型过滤，再看向量相似；
+- Neo4j 增加复杂度：业务逻辑通过 `GraphStore` 接口访问，方便临时降级。
+
+### 进入下一阶段门槛
+
+中心 Span 图可以被查询，并且能返回可追溯的底层 Span。
+
+---
+
+## M1.6 混合召回、Union 与 Reranker
+
+### 目标
+
+实现在线查询的核心证据召回链路：图召回、向量召回、BM25 召回、Union 合并、Reranker 精排。
+
+### 输入
+
+- 用户问题；
+- CenterSpanCluster；
+- Qdrant 索引；
+- BM25 索引；
+- Reranker 配置。
+
+### 输出
+
+- 候选 Span 池；
+- 去重后的候选列表；
+- 精排后的 Top-K Span；
+- 召回调试报告。
+
+### 推荐参数
+
+M1 初始参数：
+
+```text
+graph_cluster_top_k: 4
+graph_span_per_cluster: 12
+vector_top_k: 30
+bm25_top_k: 30
+union_max_candidates: 80
+rerank_top_k: 15
+min_rerank_score: optional
+```
+
+### 任务拆分
+
+1. 实现 Query Router：
+   - `character_relation`
+   - `faction_history`
+   - `location`
+   - `power_system`
+   - `timeline`
+   - `unknown`
+2. 实现图召回：
+   - 问题匹配 Cluster；
+   - 沿 `SUPPORTS` 下钻成员 Span；
+   - 补充中心 Span 本身。
+3. 实现向量召回：
+   - 问题 embedding；
+   - Qdrant Top-K；
+   - payload 返回。
+4. 实现 BM25 召回：
+   - 问题分词；
+   - Top-K；
+   - 返回 span_id 和 score。
+5. 实现 Union 合并：
+   - 按 `span_id` 去重；
+   - 保留来源列表；
+   - 保留各路分数；
+   - 计算初始融合分。
+6. 实现 Reranker 接口：
+   - 输入 `question + span_text_for_rerank`；
+   - 输出统一 score；
+   - 支持真实模型；
+   - 支持 mock reranker 便于开发。
+7. 输出调试报告：
+   - 每路召回数量；
+   - Union 后数量；
+   - Rerank Top-K；
+   - 每个 Top-K 的来源；
+   - 是否命中 Cluster。
+
+### 设计思路
+
+混合召回必须是主路径。
+
+图召回负责宏观结构，向量召回负责语义近邻，BM25 负责专有名词和原文术语。Reranker 用来统一判断“这个 Span 是否真的回答这个问题”。
+
+M1 需要特别关注“语义相似但对象错误”的假阳性。例如问题问 A 国，向量召回可能返回 B 国的相似段落。BM25 与实体覆盖规则可以提前压制这类错误。
+
+### 可选增强：实体覆盖门控
+
+参考 `VAC Mem.md` 中 MCA 思路，M1 可实现一个轻量实体覆盖分：
+
+```text
+coverage = 问题关键词与候选 Span 实体/关键词的交集比例
+```
+
+用法：
+
+- 不作为硬过滤的唯一依据；
+- 作为 Union 初始融合分的一部分；
+- 用于压低对象明显不匹配的候选。
+
+### 独立验收
+
+- 任意问题都能返回召回报告；
+- 图、向量、BM25 三路至少两路能正常参与；
+- Union 后能保留每个 Span 的来源；
+- Reranker 能输出稳定 Top-K；
+- 对 10 个手工问题，Top-K 中至少有部分人工认为相关的证据；
+- 图召回不足时系统能降级到向量 + BM25。
+
+### 建议测试
+
+- 问题包含明确实体；
+- 问题是抽象主题；
+- 问题命中未建图主题；
+- BM25 无结果；
+- Qdrant 无结果；
+- Neo4j 无结果；
+- Reranker 不可用。
+
+### 常见失败与处理
+
+- 候选池太小：增大各路 Top-K；
+- 候选池太大导致精排慢：设置 `union_max_candidates`；
+- BM25 对中文效果差：优化分词；
+- 图召回过窄：Cluster 成员补充向量相似 Span；
+- Reranker 吃不下长文本：使用 summary + quote + entities 作为精排文本。
+
+### 进入下一阶段门槛
+
+混合召回链路可运行，Top-K 结果能为证据包组装提供稳定输入。
+
+---
+
+## M1.7 证据区间合并与 Evidence Pack 组装
+
+### 目标
+
+把精排后的 Span 转换为可送入长上下文模型的原文证据包。
+
+### 输入
+
+- Rerank Top-K Span；
+- Chapter 表；
+- normalized 文本；
+- token 预算配置。
+
+### 输出
+
+- 合并后的原文区间；
+- evidence_blocks；
+- QueryEvidencePack；
+- 引用编号。
+
+### 推荐参数
+
+M1 初始参数：
+
+```text
+pre_context_chars: 300
+post_context_chars: 500
+max_evidence_chars: 40000
+merge_gap_chars: 500
+max_blocks: 12
+```
+
+### 任务拆分
+
+1. 读取每个 Span 的 `quote_start_idx`、`quote_end_idx`。
+2. 根据章节边界做上下文扩展：
+   - 向前扩展；
+   - 向后扩展；
+   - 不跨章节，除非配置允许。
+3. 区间裁剪到章节边界内。
+4. 区间排序。
+5. 合并重叠区间。
+6. 合并间距小于 `merge_gap_chars` 的近邻区间。
+7. 控制总字符数：
+   - 优先保留 Rerank 分高的区间；
+   - 优先保留图 + 向量 + BM25 多源命中的区间；
+   - 保留章节多样性。
+8. 生成 evidence_blocks：
+   - `citation_id`
+   - `chapter_title`
+   - `start_idx`
+   - `end_idx`
+   - `text`
+   - `source_span_ids`
+9. 生成 QueryEvidencePack。
+10. 写入 SQLite。
+
+### 设计思路
+
+Span 是导航点，不一定包含足够上下文。因此要适度扩展。但扩展必须克制，否则宏观问题会被大量噪声吞没。
+
+证据区间合并是确定性程序逻辑，不交给模型处理。
+
+### 独立验收
+
+- evidence_blocks 能准确从 normalized 文本切出；
+- 合并后区间不重叠；
+- 引用编号唯一；
+- 每个 evidence_block 能追溯到 source_span_ids；
+- 总证据长度不超过配置预算；
+- QueryEvidencePack 能完整复现输入给回答模型的内容。
+
+### 建议测试
+
+- 多个 Span 区间重叠；
+- 多个 Span 相距很近；
+- Span 在章节开头；
+- Span 在章节末尾；
+- 证据总长度超预算；
+- Top-K 中有无效坐标。
+
+### 常见失败与处理
+
+- 合并后证据过长：降低 Top-K 或上下文扩展；
+- 扩展跨章导致噪声大：默认不跨章；
+- 引用编号混乱：由 Evidence Pack 统一生成，不让模型自行编号；
+- 证据块丢失来源：每个 block 保存 source_span_ids。
+
+### 进入下一阶段门槛
+
+Evidence Pack 可稳定生成，并且证据文本、引用编号、原文坐标全部可追溯。
+
+---
+
+## M1.8 在线证据问答与引用输出
+
+### 目标
+
+基于 Evidence Pack 生成谨慎、可引用、可复盘的回答。
+
+### 输入
+
+- 用户问题；
+- QueryEvidencePack；
+- 回答 Prompt；
+- 长上下文模型。
+
+### 输出
+
+- 带引用的回答；
+- 不确定性标记；
+- 查询运行记录。
+
+### 回答格式建议
+
+M1 的回答不用追求最终产品文风，建议固定结构：
+
+```text
+结论：
+...
+
+证据：
+[E1] ...
+[E2] ...
+
+分析：
+...
+
+不确定性：
+...
+```
+
+也可以用更自然的 Markdown，但必须包含引用编号。
+
+### 任务拆分
+
+1. 编写回答 Prompt。
+2. Prompt 中明确：
+   - 只能基于 evidence_blocks 回答；
+   - 关键结论必须引用 `[E#]`；
+   - 证据不足必须说明；
+   - 推测必须标记为“推测”；
+   - 不得编造章节或引用。
+3. 组装模型输入：
+   - 用户问题；
+   - Cluster 摘要；
+   - evidence_blocks；
+   - 输出约束。
+4. 调用回答模型。
+5. 校验回答引用：
+   - 引用编号是否存在；
+   - 是否至少包含一个引用；
+   - 是否出现不存在的 `[E99]`。
+6. 对引用失败进行一次修复或重试。
+7. 保存最终答案到 QueryEvidencePack。
+8. CLI 输出回答与证据摘要。
+
+### 设计思路
+
+M1 的回答模型不是自由创作模型，而是“证据解释器”。它的任务是阅读已经组装好的证据，然后给出有边界的分析。
+
+引用校验必须由程序完成。模型输出后如果引用编号不存在，不能直接放行。
+
+### 独立验收
+
+- `loreweaver ask "问题"` 能输出回答；
+- 回答至少包含一个有效引用；
+- 引用编号能映射回 evidence_blocks；
+- 证据不足的问题不会被强行编答案；
+- 回答记录能在 SQLite 中回查；
+- 同一个问题重复运行，召回与回答基本稳定。
+
+### 建议测试
+
+- 有明确证据的问题；
+- 证据分散的问题；
+- 证据不足的问题；
+- 问题包含错误前提；
+- 问题要求宏观总结；
+- 问题要求时间演变。
+
+### 常见失败与处理
+
+- 回答没有引用：强制引用校验，不合格重试；
+- 模型过度推断：Prompt 中加入结论等级；
+- evidence_blocks 太多：控制证据长度；
+- 回答引用无关证据：人工评估时标记，回看 Reranker 与证据包。
+
+### 进入下一阶段门槛
+
+在线问答主链路可用，并能输出可追溯引用。
+
+---
+
+## M1.9 评估集、验收与稳定性打磨
+
+### 目标
+
+建立 M1 的最小评估体系，避免 Demo 只在少数问题上看起来可用。
+
+### 输入
+
+- 样本文本；
+- 20-30 个手工问题；
+- 问答链路；
+- Evidence Pack 记录。
+
+### 输出
+
+- M1 评估问题集；
+- 每题运行结果；
+- 人工评分表；
+- 召回/引用/答案指标；
+- M1 验收报告。
+
+### 问题集结构
+
+每个问题记录：
+
+```text
+question_id: str
+question: str
+category: str
+expected_evidence_hint: str | None
+expected_answer_notes: str | None
+difficulty: easy | medium | hard
+```
+
+问题类别建议覆盖：
+
+- 角色关系；
+- 势力格局；
+- 地点线索；
+- 力量体系；
+- 历史事件；
+- 异常现象；
+- 错误前提；
+- 证据不足。
+
+### 人工评分维度
+
+每题记录：
+
+```text
+answer_credible: 0/1/2
+citation_valid: 0/1/2
+evidence_sufficient: 0/1/2
+retrieval_quality: 0/1/2
+notes: str
+```
+
+评分解释：
+
+- `0`：不可接受；
+- `1`：部分可用；
+- `2`：基本可信。
+
+### M1 验收指标
+
+硬指标：
+
+- 完成 20-30 个问题评估；
+- 80% 以上回答包含有效原文引用；
+- 70% 以上问题达到“基本可信”；
+- 100% 查询保存 Evidence Pack；
+- 至少 2 个 CenterSpanCluster 被实际用于问答；
+- 图、向量、BM25 三路召回均能在评估中产生有效贡献；
+- 单次在线响应时间控制在 15-40 秒的可接受范围内，视模型和硬件调整。
+
+软指标：
+
+- 开发者能快速判断一次失败来自哪个环节；
+- 用户能看懂回答依据；
+- 系统遇到证据不足时不会硬编；
+- 后续 M2 能直接复用 Evidence Pack 与 Cluster。
+
+### 任务拆分
+
+1. 编写 20-30 个评估问题。
+2. 实现 `loreweaver eval run`。
+3. 批量运行问题集。
+4. 保存每题：
+   - 回答；
+   - Evidence Pack；
+   - 召回来源；
+   - Rerank Top-K；
+   - 耗时；
+   - token 估算。
+5. 建立人工评分文件。
+6. 汇总指标。
+7. 输出 M1 验收报告：
+   - 成功项；
+   - 失败项；
+   - 典型坏例；
+   - M2 前必须修复的问题；
+   - 可推迟的问题。
+
+### 独立验收
+
+- 评估命令可重复运行；
+- 每题都有落盘记录；
+- 指标能自动汇总；
+- 人工评分能补录；
+- 能从坏例回查证据包。
+
+### 常见失败与处理
+
+- 问题太容易：加入宏观、时序、错误前提问题；
+- 问题太难：标记为 hard，不让其决定 M1 是否失败；
+- 评分太主观：用 0/1/2 简化；
+- 只有答案评分，没有召回评分：必须保留检索质量维度。
+
+### M1 完成门槛
+
+评估指标达到硬指标，且验收报告中没有阻塞 M2 的高危问题。
+
+---
+
+## 7. 端到端开发顺序
+
+推荐实际开发顺序如下：
+
+1. M1.0 项目骨架与样本锁定；
+2. M1.1 文本入库、规范化与章节切分；
+3. M1.2 候选窗口切分；
+4. M1.3 结构化抽取与引用定位；
+5. M1.4 SQLite + BM25，先不急着接 Qdrant；
+6. M1.4 Qdrant 向量索引；
+7. M1.6 先实现向量 + BM25 双路召回；
+8. M1.7 证据包组装；
+9. M1.8 最小问答；
+10. M1.5 中心 Span 图骨架；
+11. M1.6 补齐图召回与 Reranker；
+12. M1.9 评估与打磨。
+
+说明：
+
+- 文档编号按架构层次排列；
+- 实际开发可先绕过 Neo4j，先让 SQLite + Qdrant + BM25 的证据问答跑通；
+- 图骨架必须在 M1 完成前进入主链路，但不必是最早实现的模块；
+- Reranker 可先用 mock 或简单打分接口，后续替换真实 Cross-Encoder。
+
+---
+
+## 8. M1 关键命令设计
+
+### 8.1 入库
+
+```bash
+loreweaver ingest --source data/raw/sample.txt --title "Sample"
+```
+
+输出：
+
+- `document_id`
+- normalized 文本路径；
+- 章节数；
+- 入库报告路径。
+
+### 8.2 切窗口
+
+```bash
+loreweaver windows build --document-id <document_id>
+```
+
+输出：
+
+- 窗口数量；
+- 平均窗口长度；
+- 异常窗口。
+
+### 8.3 抽取
+
+```bash
+loreweaver extract run --document-id <document_id> --limit 10
+loreweaver extract run --document-id <document_id> --all
+```
+
+输出：
+
+- 抽取成功数；
+- 定位成功数；
+- 失败队列。
+
+### 8.4 建索引
+
+```bash
+loreweaver index build --document-id <document_id>
+```
+
+输出：
+
+- SQLite 校验；
+- Qdrant 写入数量；
+- BM25 索引路径。
+
+### 8.5 建图
+
+```bash
+loreweaver graph candidates --document-id <document_id>
+loreweaver graph build --document-id <document_id> --clusters configs/clusters.yaml
+```
+
+输出：
+
+- Cluster 数；
+- 成员 Span 数；
+- 边数量。
+
+### 8.6 搜索调试
+
+```bash
+loreweaver search-vector --document-id <document_id> "问题"
+loreweaver search-bm25 --document-id <document_id> "问题"
+loreweaver search-graph --document-id <document_id> "问题"
+loreweaver retrieve --document-id <document_id> "问题"
+```
+
+输出：
+
+- 各路 Top-K；
+- Union 后候选；
+- Rerank 结果。
+
+### 8.7 问答
+
+```bash
+loreweaver ask --document-id <document_id> "问题"
+```
+
+输出：
+
+- 回答；
+- 引用；
+- Evidence Pack 路径；
+- 耗时与 token 估算。
+
+### 8.8 评估
+
+```bash
+loreweaver eval run --document-id <document_id> --questions data/eval/m1_questions.yaml
+loreweaver eval report --run-id <run_id>
+```
+
+输出：
+
+- 每题结果；
+- 汇总指标；
+- 坏例列表。
+
+---
+
+## 9. 配置文件建议
+
+### 9.1 `configs/default.yaml`
+
+```yaml
+ingest:
+  normalize_newlines: true
+  remove_extra_blank_lines: true
+  chapter_patterns:
+    - "^第[一二三四五六七八九十百千万0-9]+章"
+    - "^Chapter\\s+[0-9]+"
+
+window:
+  size_chars: 1200
+  overlap_ratio: 0.2
+  min_chars: 300
+  max_chars: 1600
+
+extraction:
+  model: "gpt-4o-mini"
+  temperature: 0
+  max_retries: 2
+  quote_min_chars: 30
+  quote_max_chars: 160
+
+locator:
+  fuzzy_threshold: 0.86
+  search_scope: "window_first"
+
+retrieval:
+  graph_cluster_top_k: 4
+  graph_span_per_cluster: 12
+  vector_top_k: 30
+  bm25_top_k: 30
+  union_max_candidates: 80
+  rerank_top_k: 15
+
+evidence:
+  pre_context_chars: 300
+  post_context_chars: 500
+  merge_gap_chars: 500
+  max_evidence_chars: 40000
+  max_blocks: 12
+
+qa:
+  model: "gpt-4o"
+  temperature: 0
+  require_citations: true
+```
+
+### 9.2 `configs/clusters.yaml`
+
+```yaml
+clusters:
+  - cluster_name: "主角与核心势力关系"
+    cluster_type: "character"
+    center_span_id: "span_xxx"
+    seed_entities: ["主角名", "势力名"]
+    include_span_ids:
+      - "span_aaa"
+      - "span_bbb"
+
+  - cluster_name: "力量体系线索"
+    cluster_type: "power_system"
+    center_span_id: "span_yyy"
+    seed_keywords: ["灵力", "禁术", "仪式"]
+```
+
+说明：
+
+- M1 允许人工配置 Cluster；
+- 后续 M2 再把这部分做成半自动流程。
+
+---
+
+## 10. Prompt 设计要点
+
+### 10.1 抽取 Prompt 要点
+
+必须强调：
+
+- 只基于给定窗口；
+- `exact_text_quote` 必须逐字来自原文；
+- 不要改写 quote；
+- quote 应代表窗口中最重要的设定、事件或关系；
+- 如果窗口信息贫乏，也要给低 salience，而不是硬编。
+
+抽取关注点：
+
+- 人物关系变化；
+- 势力冲突；
+- 地点与空间线索；
+- 力量体系规则；
+- 历史事件；
+- 异常现象；
+- 伏笔与隐喻。
+
+### 10.2 回答 Prompt 要点
+
+必须强调：
+
+- 只使用证据块；
+- 每个关键结论附 `[E#]`；
+- 不存在的引用编号不得使用；
+- 证据不足时明确说明；
+- 推测和事实分开；
+- 优先回答用户问题，不写泛泛总结。
+
+### 10.3 Reranker 输入文本
+
+每个候选 Span 的精排文本建议格式：
+
+```text
+章节：<chapter_title>
+摘要：<summary>
+实体：<entities>
+主题：<topics>
+原文短引：<exact_text_quote>
+```
+
+不要把超长原文直接送进 Reranker。
+
+---
+
+## 11. 测试策略
+
+### 11.1 单元测试
+
+必须覆盖：
+
+- 章节切分；
+- 窗口切分；
+- quote 精确定位；
+- quote 模糊定位；
+- 区间合并；
+- 引用编号校验；
+- Union 去重；
+- Evidence Pack 生成。
+
+### 11.2 集成测试
+
+必须覆盖：
+
+- 小文本端到端建库；
+- 抽取 mock 模式；
+- BM25 检索；
+- 向量检索 mock 或真实模式；
+- 问答 mock 模式；
+- Evidence Pack 落盘。
+
+### 11.3 人工验收测试
+
+必须覆盖：
+
+- 20-30 个问题；
+- 每题 Evidence Pack；
+- 每题人工评分；
+- 至少 3 个坏例复盘。
+
+---
+
+## 12. 风险清单与应对
+
+### 12.1 LLM 抽取 quote 不可定位
+
+风险：
+
+- 模型改写原文；
+- quote 过短；
+- quote 过长；
+- 原文中重复出现。
+
+应对：
+
+- Prompt 约束逐字引用；
+- 设置 quote 长度范围；
+- 精确匹配失败后局部模糊匹配；
+- 多命中时结合窗口位置消歧；
+- 定位失败不进入主索引。
+
+### 12.2 中文 BM25 效果不稳定
+
+风险：
+
+- 分词差导致召回弱；
+- 专有名词被切碎。
+
+应对：
+
+- M1 先用简单方案跑通；
+- 对实体词加入自定义词典；
+- BM25 文档拼接 entities/topics；
+- 后续替换更好的中文分词器。
+
+### 12.3 图结构做重
+
+风险：
+
+- 过早陷入复杂知识图谱建模；
+- 大量时间花在关系类型设计。
+
+应对：
+
+- 只保留 4 类边；
+- 中心 Span 人工指定；
+- 图只服务于召回和下钻；
+- 复杂概念锻造放到后续阶段。
+
+### 12.4 Reranker 本地部署阻塞
+
+风险：
+
+- 模型下载慢；
+- 环境复杂；
+- 推理耗时高。
+
+应对：
+
+- 先定义 Reranker 接口；
+- 提供 mock reranker；
+- 支持关闭 reranker 的降级模式；
+- 真实模型接入作为 M1 后半段任务。
+
+### 12.5 回答幻觉
+
+风险：
+
+- 模型把推测写成事实；
+- 模型编造引用；
+- 模型忽略证据不足。
+
+应对：
+
+- 强制引用校验；
+- Prompt 区分事实、推测、未知；
+- 无有效证据时允许拒答；
+- 保存 Evidence Pack 便于复查。
+
+### 12.6 开发范围膨胀
+
+风险：
+
+- 一边做 CLI，一边做 UI，一边做报告，一边做全自动聚类。
+
+应对：
+
+- M1 只看闭环；
+- UI 与报告延后；
+- 每次新增功能必须能服务 M1 验收指标；
+- 所有炫技想法记入 M2/M3 backlog。
+
+---
+
+## 13. M1 验收清单
+
+### 13.1 工程验收
+
+- [ ] 项目可安装；
+- [ ] CLI 可运行；
+- [ ] 配置文件可读取；
+- [ ] 样本文本已入库；
+- [ ] normalized 文本已生成；
+- [ ] 章节表坐标准确；
+- [ ] 窗口切分可复现；
+- [ ] 抽取结果结构化；
+- [ ] quote 定位成功率达标；
+- [ ] SQLite 元数据完整；
+- [ ] Qdrant 向量索引可查；
+- [ ] BM25 索引可查；
+- [ ] 至少 2 个 CenterSpanCluster；
+- [ ] Neo4j 或 GraphStore 可查询图骨架；
+- [ ] 混合召回主链路可运行；
+- [ ] Reranker 接口可用；
+- [ ] Evidence Pack 可生成；
+- [ ] 回答带有效引用；
+- [ ] 查询记录可回放。
+
+### 13.2 质量验收
+
+- [ ] 20-30 个问题评估集完成；
+- [ ] 80% 以上回答包含有效原文引用；
+- [ ] 70% 以上问题基本可信；
+- [ ] 至少 2 个 Cluster 在问答中实际贡献证据；
+- [ ] 图、向量、BM25 至少各有一次有效贡献案例；
+- [ ] 能复盘至少 3 个失败案例；
+- [ ] 无证据问题不会被强行编造；
+- [ ] 单次响应时间处于可接受范围。
+
+### 13.3 文档验收
+
+- [ ] README 包含 M1 快速开始；
+- [ ] 配置项有说明；
+- [ ] 数据目录有说明；
+- [ ] 评估方法有说明；
+- [ ] 常见失败有说明；
+- [ ] M1 验收报告已生成。
+
+---
+
+## 14. M1 结束时应该留下什么
+
+M1 完成后，仓库中应至少留下：
+
+- 一条可运行的单书建库流水线；
+- 一个可检索的样本文档；
+- 一批定位成功的 Span；
+- 一个可查询的向量索引；
+- 一个可查询的 BM25 索引；
+- 一个最小中心 Span 图；
+- 一个可复现的混合召回流程；
+- 一个 Evidence Pack 生成器；
+- 一个带引用的问答 CLI；
+- 一份 20-30 题评估集；
+- 一份 M1 验收报告；
+- 一批坏例与改进建议。
+
+这些产物将直接支撑 Milestone 2：
+
+- 报告生成模板；
+- 更稳定的中心 Span 聚合；
+- 主题级设定整理；
+- 半自动聚类探索；
+- 更细的引用与冲突标记。
+
+---
+
+## 15. M1 Backlog 优先级
+
+### P0：没有它 M1 不成立
+
+- 文本入库与章节坐标；
+- 窗口切分；
+- 结构化抽取；
+- quote 定位；
+- Span 元数据落盘；
+- BM25 检索；
+- 向量检索；
+- Evidence Pack；
+- 带引用回答；
+- 评估问题集。
+
+### P1：M1 必须尽量完成
+
+- CenterSpanCluster；
+- Neo4j 图骨架；
+- 图召回；
+- Reranker；
+- 查询分类；
+- 引用校验；
+- 评估报告。
+
+### P2：可作为增强，不能阻塞主线
+
+- MCA 风格实体覆盖门控；
+- 更复杂中文分词；
+- 更漂亮的 CLI 输出；
+- 成本统计；
+- 并发抽取；
+- 断点续跑；
+- 简单 Web API。
+
+### P3：明确延后到后续里程碑
+
+- 报告生成正式模板；
+- 全自动概念锻造；
+- 大规模长篇建库优化；
+- 多 Agent；
+- 可视化编辑界面；
+- 多书项目管理；
+- 法律/刑侦等非文娱场景泛化。
+
+---
+
+## 16. 推荐执行节奏
+
+### 第 1 周：地基周
+
+目标：
+
+- 项目骨架；
+- 文本入库；
+- 章节切分；
+- 窗口切分；
+- SQLite 基础表；
+- 小文本测试。
+
+验收：
+
+- 可以对样本文本生成章节和窗口；
+- 坐标抽查无误。
+
+### 第 2 周：抽取周
+
+目标：
+
+- Pydantic Schema；
+- 抽取 Prompt；
+- LLM 抽取；
+- quote 定位；
+- 失败队列；
+- Span 落盘。
+
+验收：
+
+- 样本全量抽取完成；
+- quote 定位成功率达到 90% 左右；
+- 失败记录可复查。
+
+### 第 3 周：检索周
+
+目标：
+
+- BM25；
+- Qdrant；
+- 双路召回；
+- Union；
+- 初版 Evidence Pack；
+- 最小回答。
+
+验收：
+
+- 能对自然语言问题返回证据包；
+- 能生成带引用回答。
+
+### 第 4 周：图与精排周
+
+目标：
+
+- CenterSpanCluster；
+- Neo4j；
+- 图召回；
+- Reranker；
+- 引用校验；
+- 召回报告。
+
+验收：
+
+- 至少 2 个 Cluster 进入主链路；
+- 混合召回优于单路召回的案例可展示。
+
+### 第 5 周：评估与打磨周
+
+目标：
+
+- 20-30 个问题集；
+- 批量评估；
+- 人工评分；
+- 坏例复盘；
+- M1 验收报告。
+
+验收：
+
+- 达成 M1 硬指标；
+- 明确 M2 的输入资产和待修复问题。
+
+---
+
+## 17. M1 最小演示脚本
+
+M1 完成时，应该能用下面脚本完成演示：
+
+```bash
+# 1. 入库
+loreweaver ingest --source data/raw/sample.txt --title "M1 Sample"
+
+# 2. 切窗口
+loreweaver windows build --document-id <document_id>
+
+# 3. 抽取与定位
+loreweaver extract run --document-id <document_id> --all
+
+# 4. 建索引
+loreweaver index build --document-id <document_id>
+
+# 5. 建图
+loreweaver graph build --document-id <document_id> --clusters configs/clusters.yaml
+
+# 6. 提问
+loreweaver ask --document-id <document_id> "这个故事里的力量体系目前有哪些明确规则？"
+
+# 7. 评估
+loreweaver eval run --document-id <document_id> --questions data/eval/m1_questions.yaml
+loreweaver eval report --run-id <run_id>
+```
+
+演示时必须展示：
+
+- 章节坐标；
+- Span quote 定位；
+- 三路召回结果；
+- Rerank Top-K；
+- Evidence Pack；
+- 带引用回答；
+- 评估摘要。
+
+---
+
+## 18. M1 的核心判断
+
+M1 不是为了证明 LoreWeaver 已经“理解整本书”，而是为了证明以下工程命题：
+
+1. 原文坐标体系可行；
+2. LLM 抽取可以通过 quote 反查变得可控；
+3. Span 能作为可追溯证据单元；
+4. 向量 + BM25 + 图召回能互补；
+5. Reranker 能帮助筛掉错误候选；
+6. Evidence Pack 能把检索结果变成可阅读原文；
+7. 回答可以基于证据而不是凭空生成；
+8. 系统失败时可以定位原因。
+
+只要这 8 件事成立，LoreWeaver 就有了继续走向 M2/M3 的真正地基。
