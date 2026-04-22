@@ -7,6 +7,9 @@
 
 项目文档链接：[LoreWeaver.md](/LoreWeaver.md)
 
+conda环境：loreweaver
+请在环境内运行测试，例如：`conda run -n loreweaver python -m loreweaver.cli`
+
 ---
 
 ## 1. Milestone 1 总目标
@@ -681,6 +684,82 @@ normalized 文本是 M1 的 Layer 0。之后所有坐标都必须基于 normaliz
 
 样本文本能稳定生成 `Document` 与 `Chapter`，且章节坐标人工抽查无误。
 
+### 验收记录
+
+完成日期：2026-04-22
+
+验收结论：M1.1 已完成，可以进入 M1.2。
+
+实际完成内容：
+
+- 实现真实 `ingest` CLI；
+- 实现 raw `.txt` 读取与 UTF-8/GB18030 编码 fallback；
+- 实现 normalized 文本生成，包括换行统一、行尾空白清理、连续空行压缩、分隔线与常见广告行清理；
+- 实现章节识别，优先使用真实章标题，必要时才使用配置中的包装标题或固定长度伪章节 fallback；
+- 支持中文数字章节、阿拉伯数字章节和 `Chapter x` 章节；
+- 生成稳定 `content_hash` 与 `document_id`；
+- 将 `Document`、`Chapter`、入库报告写入 SQLite；
+- 输出 JSON 入库报告；
+- 支持 `--max-chapters` 限制首轮落库章节数；
+- 增加 M1.1 单元测试。
+
+关键产物路径：
+
+- `loreweaver/cli.py`
+- `loreweaver/config.py`
+- `loreweaver/ingest/reader.py`
+- `loreweaver/ingest/normalizer.py`
+- `loreweaver/ingest/chapter_splitter.py`
+- `loreweaver/ingest/pipeline.py`
+- `loreweaver/storage/sqlite_store.py`
+- `tests/unit/test_m1_1_ingest.py`
+- `data/normalized/doc_59331b17113e.txt`
+- `data/runs/loreweaver_m1.sqlite3`
+- `data/runs/ingest_20260422T014532Z_61052e59_ingest_report.json`
+
+样本文本入库结果：
+
+- 原始文本：`data/raw/DawnSword_Chapter_1_260.txt`
+- normalized 文本：`data/normalized/doc_59331b17113e.txt`
+- `document_id`：`doc_59331b17113e`
+- `content_hash`：`59331b17113ef174b9f334c427a811b6957701de649ecc091f99d61c5e3c3f36`
+- normalized 字符数：`882478`
+- 章节数：`258`
+- 章节识别策略：`real_chapter_patterns`
+- 最短章节：`3169` 字符
+- 最长章节：`4348` 字符
+- 清理前后字符差异：移除 `10961` 字符
+- 章节边界异常：`0`
+
+已执行验证命令：
+
+```bash
+python3 -m unittest tests.unit.test_m1_1_ingest
+python3 -m compileall loreweaver tests
+python3 -m loreweaver.cli ingest --source data/raw/DawnSword_Chapter_1_260.txt --max-chapters 20
+python3 -m loreweaver.cli ingest --source data/raw/DawnSword_Chapter_1_260.txt
+python3 -m loreweaver.cli status
+python3 -m loreweaver.cli ingest --source data/raw/DawnSword_Chapter_1_260.txt --max-chapters 258
+sqlite3 data/runs/loreweaver_m1.sqlite3 "select count(*) from documents; select count(*) from chapters where document_id='doc_59331b17113e'; select count(*) from ingest_reports;"
+```
+
+验证结果：
+
+- 单元测试通过；
+- `compileall` 通过；
+- `status` 显示阶段为 `M1.1`，样本文本存在，bootstrap 正常；
+- 小范围 `--max-chapters 20` 入库成功，无章节边界告警；
+- 完整样本入库成功，生成 258 个真实章节；
+- 重复导入同一 normalized 文本未生成重复 `Document`，SQLite 中 `documents=1`；
+- SQLite 中 `doc_59331b17113e` 对应 `chapters=258`；
+- 人工抽查首尾章节坐标可回切，例如第 1 章为 `[68, 3366]`，第 258 章为 `[878974, 882478]`。
+
+遗留问题与 M1.2 注意事项：
+
+- 当前 normalized 坐标从真实章标题开始，样本开头的书名、作者、提取范围等元信息未作为章节覆盖，这是有意保留的前置信息；
+- M1.2 切窗口时应只遍历 `Chapter` 表，不要把 raw 文本或前置信息重新纳入坐标体系；
+- `data/normalized/` 与 `data/runs/` 仍按 `.gitignore` 作为本地生成物管理。
+
 ---
 
 ## M1.2 候选窗口切分
@@ -760,6 +839,81 @@ max_window_chars: 1600
 ### 进入下一阶段门槛
 
 窗口坐标全部可回切，窗口报告无明显异常。
+
+### 验收记录
+
+完成日期：2026-04-22
+
+验收结论：M1.2 已完成，可以进入 M1.3。
+
+实际完成内容：
+
+- 实现 `CandidateWindow` 数据模型；
+- 实现按章节边界独立切分的滑动窗口算法；
+- 支持配置化 `window_size_chars / overlap_ratio / min_window_chars / max_window_chars`；
+- 对末尾过短窗口执行并入前一窗口策略；
+- 实现窗口坐标校验，确认窗口不跨章、坐标可回切 normalized 文本；
+- 将 `candidate_windows` 与 `window_reports` 写入 SQLite；
+- 实现真实 `windows` CLI；
+- 输出 JSON 窗口切分报告；
+- 增加 M1.2 单元测试；
+- 修复 M1.1 normalized 文本写入在当前 Python 版本下的 `newline` 兼容性问题。
+
+关键产物路径：
+
+- `loreweaver/models/window.py`
+- `loreweaver/ingest/window_splitter.py`
+- `loreweaver/storage/sqlite_store.py`
+- `loreweaver/cli.py`
+- `loreweaver/ingest/pipeline.py`
+- `tests/unit/test_m1_2_windows.py`
+- `data/runs/loreweaver_m1.sqlite3`
+- `data/runs/windows_20260422T035226Z_0f1461e1_windows_report.json`
+
+样本文本窗口切分结果：
+
+- `document_id`：`doc_59331b17113e`
+- normalized 文本：`data/normalized/doc_59331b17113e.txt`
+- 章节数：`258`
+- 总窗口数：`1030`
+- 平均窗口长度：`1036.59`
+- 最短窗口长度：`303`
+- 最长窗口长度：`1255`
+- 过短窗口数：`0`
+- 窗口大小：`1200`
+- 重叠比例：`0.2`
+- 有效步长：`960`
+- 窗口跨章异常：`0`
+- 边界告警：`0`
+
+已执行验证命令：
+
+```bash
+conda run -n loreweaver python -m unittest tests.unit.test_m1_1_ingest tests.unit.test_m1_2_windows
+PYTHONPYCACHEPREFIX=/tmp/loreweaver_pycache conda run -n loreweaver python -m compileall loreweaver tests
+conda run -n loreweaver python -m loreweaver.cli windows --document-id doc_59331b17113e
+conda run -n loreweaver python -m loreweaver.cli status
+sqlite3 data/runs/loreweaver_m1.sqlite3 "select count(*) from candidate_windows where document_id='doc_59331b17113e'; select count(*) from window_reports; select min(window_end-window_start), max(window_end-window_start), round(avg(window_end-window_start), 2) from candidate_windows where document_id='doc_59331b17113e'; select count(*) from candidate_windows w join chapters c on w.chapter_id=c.chapter_id where w.window_start < c.start_idx or w.window_end > c.end_idx;"
+conda run -n loreweaver python -c "import sqlite3; text=open('data/normalized/doc_59331b17113e.txt', encoding='utf-8').read(); con=sqlite3.connect('data/runs/loreweaver_m1.sqlite3'); rows=con.execute(\"select window_id, window_start, window_end, text from candidate_windows where document_id='doc_59331b17113e' order by window_id limit 20\").fetchall(); print(len(rows)); print(sum(1 for _, s, e, t in rows if text[s:e] != t))"
+```
+
+验证结果：
+
+- M1.1 与 M1.2 单元测试通过；
+- `compileall` 通过；
+- `windows` CLI 成功生成窗口报告并写入 SQLite；
+- SQLite 中 `candidate_windows=1030`；
+- SQLite 中 `window_reports=1`；
+- SQLite 抽查窗口长度统计为 `303 / 1255 / 1036.59`；
+- SQLite 查询跨章节窗口数量为 `0`；
+- 抽查前 20 个窗口的存储文本与 normalized 文本坐标回切结果完全一致；
+- `status` 显示阶段为 `M1.2`，bootstrap 正常。
+
+遗留问题与 M1.3 注意事项：
+
+- M1.3 抽取应优先从 `candidate_windows` 表读取窗口，必要时用 `window_start/window_end` 从 normalized 文本重新回切；
+- `CandidateWindow.text` 是抽取输入缓存，不是最终可信证据源，最终可信坐标仍必须以 normalized 文本和 quote 定位结果为准；
+- 当前窗口数量基于完整 258 章样本为 `1030`，如果首轮 LLM 抽取成本过高，可先重新 ingest 较小 `--max-chapters` 样本或在 M1.3 增加窗口范围过滤。
 
 ---
 

@@ -1,0 +1,8 @@
+{
+  "python.defaultInterpreterPath": "/Users/qciris/miniforge3/envs/loreweaver/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ]
+}
+

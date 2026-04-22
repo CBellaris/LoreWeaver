@@ -4,7 +4,7 @@ LoreWeaver is an LLM-driven analysis engine for long-form fictional worlds. The 
 
 ## Current Stage
 
-M1.0 is the project bootstrap stage. It provides:
+M1.2 is the candidate window stage. The current implementation provides:
 
 - Python package skeleton
 - CLI entry point
@@ -12,6 +12,8 @@ M1.0 is the project bootstrap stage. It provides:
 - data directory layout
 - first raw sample registration
 - run id and logging helpers
+- M1.1 raw text ingestion, normalization, chapter splitting, and SQLite metadata
+- M1.2 chapter-bounded overlapping candidate windows with SQLite records and JSON reports
 
 The first test sample is:
 
@@ -50,7 +52,7 @@ loreweaver ask
 loreweaver eval
 ```
 
-Each command currently reports its run id and implementation status. The next substage, M1.1, will implement `ingest`.
+`ingest` and `windows` are implemented; later M1 commands still report their run id and placeholder status.
 
 ## Data Directories
 
@@ -75,4 +77,3 @@ configs/storage.yaml
 ```
 
 Copy `.env.example` to `.env` when model or database credentials are needed.
-

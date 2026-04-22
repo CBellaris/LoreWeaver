@@ -1,0 +1,59 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Active File (loreweaver)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "/Users/qciris/miniforge3/envs/loreweaver/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "LOREWEAVER_CONFIG": "${workspaceFolder}/configs/default.yaml",
+        "LOREWEAVER_DATA_DIR": "${workspaceFolder}/data"
+      },
+      "justMyCode": true
+    },
+    {
+      "name": "LoreWeaver CLI: status",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loreweaver.cli",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "/Users/qciris/miniforge3/envs/loreweaver/bin/python",
+      "args": [
+        "status"
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "LOREWEAVER_CONFIG": "${workspaceFolder}/configs/default.yaml",
+        "LOREWEAVER_DATA_DIR": "${workspaceFolder}/data"
+      },
+      "justMyCode": true
+    },
+    {
+      "name": "LoreWeaver CLI: command with args",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "loreweaver.cli",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "python": "/Users/qciris/miniforge3/envs/loreweaver/bin/python",
+      "args": [
+        "ingest",
+        "--source",
+        "data/raw/DawnSword_Chapter_1_260.txt"
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "LOREWEAVER_CONFIG": "${workspaceFolder}/configs/default.yaml",
+        "LOREWEAVER_DATA_DIR": "${workspaceFolder}/data"
+      },
+      "justMyCode": true
+    }
+  ]
+}
+

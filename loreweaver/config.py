@@ -23,6 +23,11 @@ class AppConfig:
         source_path = self.values.get("sample", {}).get("source_path")
         return Path(source_path) if source_path else None
 
+    @property
+    def sqlite_path(self) -> Path:
+        path = self.values.get("sqlite", {}).get("path")
+        return Path(path) if path else self.data_dir / "runs" / "loreweaver_m1.sqlite3"
+
 
 def load_config(path: str | Path = "configs/default.yaml") -> AppConfig:
     config_path = Path(path)
@@ -71,7 +76,12 @@ def _load_simple_yaml(raw_config: str) -> dict[str, Any]:
             if not isinstance(parent, list):
                 parent_ref = stack[-1][2]
                 parent_key = stack[-1][3]
-                if isinstance(parent, dict) and not parent and isinstance(parent_ref, dict) and parent_key:
+                if (
+                    isinstance(parent, dict)
+                    and not parent
+                    and isinstance(parent_ref, dict)
+                    and parent_key
+                ):
                     replacement: list[Any] = []
                     parent_ref[parent_key] = replacement
                     stack[-1] = (stack[-1][0], replacement, parent_ref, parent_key)
@@ -127,3 +137,9 @@ def _parse_scalar(value: str) -> Any:
         return float(value)
     except ValueError:
         return value
+
+if __name__ == "__main__":
+    config = load_config()
+    print(config)
+    print(config.data_dir)
+    print(config.sample_source_path)

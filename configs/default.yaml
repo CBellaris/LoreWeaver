@@ -1,6 +1,6 @@
 project:
   name: "LoreWeaver"
-  stage: "M1.0"
+  stage: "M1.2"
   data_dir: "data"
 
 sample:
@@ -12,8 +12,10 @@ sample:
 ingest:
   normalize_newlines: true
   remove_extra_blank_lines: true
+  fallback_chapter_chars: 12000
   chapter_patterns:
-    - "^第[一二三四五六七八九十百千万0-9]+章"
+    - "^第[一二三四五六七八九十百千万零〇两0-9]+章"
+    - "^[一二三四五六七八九十百千万零〇两0-9]+章"
     - "^Chapter\\s+[0-9]+"
     - "^【 第 [0-9]+ 部分 】"
 
@@ -53,4 +55,3 @@ qa:
   model: "gpt-4o"
   temperature: 0
   require_citations: true
-
