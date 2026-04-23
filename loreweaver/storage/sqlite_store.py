@@ -179,6 +179,43 @@ class SQLiteStore:
                 """
             )
 
+    def initialize_index_tables(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS embedding_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL,
+                    input_sha256 TEXT NOT NULL,
+                    input_text TEXT NOT NULL,
+                    vector_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_embedding_cache_model_input
+                ON embedding_cache(provider, model, input_sha256);
+
+                CREATE TABLE IF NOT EXISTS index_reports (
+                    run_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS query_runs (
+                    query_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    user_question TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id)
+                );
+                """
+            )
+
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
@@ -515,6 +552,80 @@ class SQLiteStore:
             rows = connection.execute(query, params).fetchall()
         return [_span_from_row(row) for row in rows]
 
+    def get_span(self, span_id: str) -> Span:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM spans WHERE span_id = ?",
+                (span_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"Span not found: {span_id}")
+        return _span_from_row(row)
+
+    def list_spans_by_ids(self, span_ids: Iterable[str]) -> list[Span]:
+        ids = list(dict.fromkeys(span_ids))
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM spans WHERE span_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        parsed_spans = [_span_from_row(row) for row in rows]
+        spans_by_id = {span.span_id: span for span in parsed_spans}
+        return [spans_by_id[span_id] for span_id in ids if span_id in spans_by_id]
+
+    def get_embedding_cache(self, cache_key: str) -> list[float] | None:
+        with self.connect() as connection:
+            if not _table_exists(connection, "embedding_cache"):
+                return None
+            row = connection.execute(
+                "SELECT vector_json FROM embedding_cache WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return [float(value) for value in json.loads(row["vector_json"])]
+
+    def upsert_embedding_cache(
+        self,
+        *,
+        cache_key: str,
+        provider: str,
+        model: str,
+        input_sha256: str,
+        input_text: str,
+        vector: list[float],
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO embedding_cache (
+                    cache_key, provider, model, dimensions, input_sha256,
+                    input_text, vector_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    provider=excluded.provider,
+                    model=excluded.model,
+                    dimensions=excluded.dimensions,
+                    input_sha256=excluded.input_sha256,
+                    input_text=excluded.input_text,
+                    vector_json=excluded.vector_json,
+                    created_at=excluded.created_at
+                """,
+                (
+                    cache_key,
+                    provider,
+                    model,
+                    len(vector),
+                    input_sha256,
+                    input_text,
+                    json.dumps(vector),
+                ),
+            )
+
     def insert_locator_candidates(self, span_id: str, candidates: Iterable[object]) -> None:
         with self.connect() as connection:
             connection.execute("DELETE FROM locator_candidates WHERE span_id = ?", (span_id,))
@@ -564,6 +675,18 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT OR REPLACE INTO extraction_reports (
+                    run_id, document_id, report_json, created_at
+                )
+                VALUES (?, ?, ?, datetime('now'))
+                """,
+                (run_id, document_id, json.dumps(report, ensure_ascii=False, indent=2)),
+            )
+
+    def insert_index_report(self, run_id: str, document_id: str, report: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO index_reports (
                     run_id, document_id, report_json, created_at
                 )
                 VALUES (?, ?, ?, datetime('now'))

@@ -11,11 +11,15 @@ from loreweaver.config import load_config
 from loreweaver.extraction.extractor import extract_document_windows
 from loreweaver.ingest.pipeline import ingest_text
 from loreweaver.ingest.window_splitter import build_candidate_windows
+from loreweaver.indexing.pipeline import (
+    build_m14_indexes,
+    search_bm25_index,
+    search_vector_index,
+)
 from loreweaver.logging import configure_logging, new_run_id
 
 
 PIPELINE_COMMANDS = (
-    "index",
     "graph",
     "retrieve",
     "ask",
@@ -147,6 +151,85 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable per-window extraction progress output.",
     )
     extract_parser.set_defaults(func=_extract)
+
+    index_parser = subparsers.add_parser(
+        "index",
+        help="M1.4 index: build local Qdrant vector index and BM25 index from located spans.",
+    )
+    index_parser.add_argument(
+        "--document-id",
+        help="Document id to index. Defaults to the latest SQLite document.",
+    )
+    index_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite, Qdrant, and BM25 settings.",
+    )
+    index_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing embedding settings.",
+    )
+    index_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Only index N located spans for small plumbing checks.",
+    )
+    index_parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local mock embeddings without calling an API.",
+    )
+    index_parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable embedding progress output.",
+    )
+    index_parser.set_defaults(func=_index)
+
+    search_vector_parser = subparsers.add_parser(
+        "search-vector",
+        help="M1.4 debug: search the vector index.",
+    )
+    search_vector_parser.add_argument("query", help="Query text.")
+    search_vector_parser.add_argument(
+        "--document-id",
+        help="Document id to search. Defaults to the latest SQLite document.",
+    )
+    search_vector_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite and Qdrant settings.",
+    )
+    search_vector_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing embedding settings.",
+    )
+    search_vector_parser.add_argument("--top-k", type=int, default=5, help="Number of hits.")
+    search_vector_parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local mock embeddings for query embedding.",
+    )
+    search_vector_parser.set_defaults(func=_search_vector)
+
+    search_bm25_parser = subparsers.add_parser(
+        "search-bm25",
+        help="M1.4 debug: search the BM25 index.",
+    )
+    search_bm25_parser.add_argument("query", help="Query text.")
+    search_bm25_parser.add_argument(
+        "--document-id",
+        help="Document id to search. Defaults to the latest SQLite document.",
+    )
+    search_bm25_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite and BM25 settings.",
+    )
+    search_bm25_parser.add_argument("--top-k", type=int, default=5, help="Number of hits.")
+    search_bm25_parser.set_defaults(func=_search_bm25)
 
     for command in PIPELINE_COMMANDS:
         command_parser = subparsers.add_parser(
@@ -332,6 +415,87 @@ def _extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def _index(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    models_config = load_config(args.models_config)
+    run_id = new_run_id("index")
+    progress = _build_index_progress_printer() if not args.no_progress else None
+
+    report = build_m14_indexes(
+        config=config,
+        storage_config=storage_config,
+        models_config=models_config,
+        run_id=run_id,
+        document_id=args.document_id,
+        limit=args.limit,
+        mock_embeddings=args.mock_embeddings,
+        progress_callback=progress,
+    )
+
+    print(f"run_id: {run_id}")
+    print("command: index")
+    print(f"document_id: {report['document']['document_id']}")
+    print(f"sqlite_path: {report['sqlite_path']}")
+    print(f"report_path: {report['report_path']}")
+    print(f"located_span_count: {report['located_span_count']}")
+    print(f"embedding_model: {report['embedding']['model']}")
+    print(f"embedding_dimensions: {report['embedding']['dimensions']}")
+    print(f"embedding_cache_hits: {report['embedding']['cache_hits']}")
+    print(f"embedding_cache_misses: {report['embedding']['cache_misses']}")
+    print(f"embedding_cost_yuan: {report['embedding']['estimated_cost_yuan']}")
+    print(f"qdrant_collection: {report['qdrant']['collection_name']}")
+    print(f"qdrant_count: {report['qdrant']['collection_count']}")
+    if report["qdrant"]["local_path"]:
+        print(f"qdrant_local_path: {report['qdrant']['local_path']}")
+    print(f"bm25_index_path: {report['bm25']['index_path']}")
+    print(f"bm25_document_count: {report['bm25']['document_count']}")
+    print("status: ok")
+    return 0
+
+
+def _search_vector(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    models_config = load_config(args.models_config)
+    report = search_vector_index(
+        config=config,
+        storage_config=storage_config,
+        models_config=models_config,
+        query=args.query,
+        document_id=args.document_id,
+        top_k=args.top_k,
+        mock_embeddings=args.mock_embeddings,
+    )
+
+    print("command: search-vector")
+    print(f"document_id: {report['document_id']}")
+    print(f"query: {report['query']}")
+    print(f"result_count: {len(report['results'])}")
+    _print_search_results(report["results"])
+    print("status: ok")
+    return 0
+
+
+def _search_bm25(args: argparse.Namespace) -> int:
+    storage_config = _load_storage_config(args.storage_config)
+    report = search_bm25_index(
+        storage_config=storage_config,
+        query=args.query,
+        document_id=args.document_id,
+        top_k=args.top_k,
+    )
+
+    print("command: search-bm25")
+    print(f"document_id: {report['document_id']}")
+    print(f"query: {report['query']}")
+    print(f"index_path: {report['index_path']}")
+    print(f"result_count: {len(report['results'])}")
+    _print_search_results(report["results"])
+    print("status: ok")
+    return 0
+
+
 def _build_extract_progress_printer() -> object:
     totals = {
         "spans": 0,
@@ -441,6 +605,57 @@ def _build_extract_progress_printer() -> object:
             )
 
     return progress
+
+
+def _build_index_progress_printer() -> object:
+    def progress(event: str, payload: dict) -> None:
+        if event == "planned":
+            print(
+                "[index] "
+                f"document={payload['document_id']} "
+                f"spans={payload['span_count']} "
+                f"embedding_model={payload['embedding_model']} "
+                f"mock_embeddings={payload['mock_embeddings']}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "embedding_batch_start":
+            print(
+                "[index] "
+                f"embedding batch {payload['batch_index']}/{payload['batch_count']} "
+                f"size={payload['batch_size']}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "completed":
+            print(
+                "[index] "
+                f"completed vectors={payload['qdrant']['collection_count']} "
+                f"bm25_docs={payload['bm25']['document_count']} "
+                f"report={payload['report_path']}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    return progress
+
+
+def _print_search_results(results: list[dict]) -> None:
+    for result in results:
+        summary = result.get("micro_summary") or ""
+        if len(summary) > 120:
+            summary = summary[:117] + "..."
+        print(
+            f"{result['rank']}. span_id={result['span_id']} "
+            f"score={result['score']:.6f} "
+            f"chapter_id={result.get('chapter_id')} "
+            f"range={result.get('span_start_idx')}-{result.get('span_end_idx')}"
+        )
+        print(f"   topic: {result.get('micro_topic')}")
+        print(f"   summary: {summary}")
+        entities = result.get("entities") or []
+        if entities:
+            print(f"   entities: {', '.join(str(entity) for entity in entities[:8])}")
 
 
 def _placeholder(args: argparse.Namespace) -> int:

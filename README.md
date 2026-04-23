@@ -4,7 +4,7 @@ LoreWeaver is an LLM-driven analysis engine for long-form fictional worlds. The 
 
 ## Current Stage
 
-M1.3 is the multi-span structured extraction and anchor-location stage. The current implementation provides:
+M1.4 is the metadata, vector index, and BM25 index stage. The current implementation provides:
 
 - Python package skeleton
 - CLI entry point
@@ -15,6 +15,7 @@ M1.3 is the multi-span structured extraction and anchor-location stage. The curr
 - M1.1 raw text ingestion, normalization, chapter splitting, and SQLite metadata
 - M1.2 chapter-bounded overlapping candidate windows with SQLite records and JSON reports
 - M1.3 OpenAI-compatible LLM extraction, multi-Span discovery per window, start/end anchor location with overlong-anchor trimming, Span persistence with optional `located_text`, window-level `uncovered_text` debug output, failure queues, progress timing, and API cost estimates
+- M1.4 embedding cache in SQLite, local-or-remote Qdrant vector indexing, local BM25 indexing with Chinese-friendly tokenization, and standalone `search-vector` / `search-bm25` debug commands
 
 The first test sample is:
 
@@ -47,13 +48,15 @@ loreweaver ingest
 loreweaver windows
 loreweaver extract
 loreweaver index
+loreweaver search-vector "问题"
+loreweaver search-bm25 "问题"
 loreweaver graph
 loreweaver retrieve
 loreweaver ask
 loreweaver eval
 ```
 
-`ingest`, `windows`, and `extract` are implemented; later M1 commands still report their run id and placeholder status.
+`ingest`, `windows`, `extract`, `index`, `search-vector`, and `search-bm25` are implemented; later M1 commands still report their run id and placeholder status.
 
 For a paid API smoke test, set `SILICONFLOW_API_KEY` in your environment and start with a small limit:
 
@@ -66,6 +69,7 @@ For local plumbing checks without API calls:
 
 ```bash
 python3 -m loreweaver.cli extract --limit 10 --mock
+python3 -m loreweaver.cli index --mock-embeddings
 ```
 
 ## Data Directories

@@ -4,7 +4,9 @@ sqlite:
 qdrant:
   url_env: "QDRANT_URL"
   api_key_env: "QDRANT_API_KEY"
+  local_path: "data/indexes/qdrant"
   collection_prefix: "loreweaver"
+  distance: "cosine"
 
 neo4j:
   uri_env: "NEO4J_URI"
@@ -14,4 +16,3 @@ neo4j:
 
 bm25:
   index_dir: "data/indexes"
-
