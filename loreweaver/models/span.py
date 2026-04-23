@@ -12,16 +12,22 @@ class Span:
     document_id: str
     chapter_id: str
     window_id: str
+    span_index_in_window: int
     window_start: int
     window_end: int
-    summary: str
+    micro_topic: str
+    span_type: str
+    micro_summary: str
     entities: list[str]
     topics: list[str]
     salience_score: float
-    exact_text_quote: str
-    quote_start_idx: int | None
-    quote_end_idx: int | None
+    start_anchor_quote: str
+    end_anchor_quote: str
+    key_quote: str
+    overlap_reason: str
+    span_start_idx: int | None
+    span_end_idx: int | None
+    located_text: str
     locator_confidence: float
     locator_status: str
     created_at: datetime
-

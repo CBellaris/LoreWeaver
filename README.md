@@ -4,7 +4,7 @@ LoreWeaver is an LLM-driven analysis engine for long-form fictional worlds. The 
 
 ## Current Stage
 
-M1.2 is the candidate window stage. The current implementation provides:
+M1.3 is the multi-span structured extraction and anchor-location stage. The current implementation provides:
 
 - Python package skeleton
 - CLI entry point
@@ -14,6 +14,7 @@ M1.2 is the candidate window stage. The current implementation provides:
 - run id and logging helpers
 - M1.1 raw text ingestion, normalization, chapter splitting, and SQLite metadata
 - M1.2 chapter-bounded overlapping candidate windows with SQLite records and JSON reports
+- M1.3 OpenAI-compatible LLM extraction, multi-Span discovery per window, start/end anchor location with overlong-anchor trimming, Span persistence with optional `located_text`, window-level `uncovered_text` debug output, failure queues, progress timing, and API cost estimates
 
 The first test sample is:
 
@@ -52,7 +53,20 @@ loreweaver ask
 loreweaver eval
 ```
 
-`ingest` and `windows` are implemented; later M1 commands still report their run id and placeholder status.
+`ingest`, `windows`, and `extract` are implemented; later M1 commands still report their run id and placeholder status.
+
+For a paid API smoke test, set `SILICONFLOW_API_KEY` in your environment and start with a small limit:
+
+```bash
+python3 -m pip install -e ".[m1]"
+python3 -m loreweaver.cli extract --limit 10
+```
+
+For local plumbing checks without API calls:
+
+```bash
+python3 -m loreweaver.cli extract --limit 10 --mock
+```
 
 ## Data Directories
 

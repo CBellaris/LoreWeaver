@@ -1,12 +1,18 @@
 providers:
   openai:
     api_key_env: "OPENAI_API_KEY"
+  siliconflow:
+    api_key_env: "SILICONFLOW_API_KEY"
+    base_url: "https://api.siliconflow.cn/v1"
 
 models:
   extraction:
-    provider: "openai"
-    name: "gpt-4o-mini"
+    provider: "siliconflow"
+    name: "Pro/deepseek-ai/DeepSeek-V3.2"
     temperature: 0
+    input_yuan_per_1k: 0.002
+    output_yuan_per_1k: 0.003
+    json_response_format: false
   qa:
     provider: "openai"
     name: "gpt-4o"
@@ -18,4 +24,3 @@ models:
     provider: "local"
     name: "BAAI/bge-reranker-v2-m3"
     enabled: false
-

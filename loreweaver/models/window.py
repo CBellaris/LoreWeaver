@@ -14,6 +14,7 @@ class CandidateWindow:
     window_start: int
     window_end: int
     text: str
+    uncovered_text: str = ""
 
     @property
     def char_count(self) -> int:

@@ -1,6 +1,7 @@
 .DS_Store
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
 .venv/
@@ -15,4 +16,3 @@ data/eval/*.out.*
 !data/normalized/.gitkeep
 !data/runs/.gitkeep
 !data/indexes/.gitkeep
-
