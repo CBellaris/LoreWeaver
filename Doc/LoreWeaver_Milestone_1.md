@@ -1477,6 +1477,28 @@ A/B 初步结论：
 - 当前改进版的四个簇为：`历史事件：高文`、`关键地点：先祖陵寝`、`角色关系：瑞贝卡·塞西尔`、`核心势力：塞西尔家族`；
 - 仍需在 M1.6 通过真实查询评估图召回贡献，单看簇标题和成员还不能证明最终问答质量。
 
+#### M1.3 增量抽取命令改进记录
+
+完成日期：2026-04-24
+
+改进内容：
+
+- `extract` 不再在每次运行时重建并清空所有抽取表；
+- 新增 `extract --list-windows`，可查看候选窗口是否已经抽取、Span 数、located 数和失败数；
+- `extract --list-windows --only extracted|pending` 支持只看已抽取或未抽取窗口；
+- `--window-id` 改为可重复、可逗号分隔；
+- 新增 `--window-range`，按 1-based 全局窗口序号指定范围，例如 `--window-range 21-40`；
+- 指定窗口重跑时会覆盖这些窗口的旧 Span、locator candidates、failures 和 uncovered_text，但不会影响未指定窗口；
+- 重建 windows 或重新 ingest 文档时仍会清理对应旧抽取结果，避免坐标和窗口不一致。
+
+示例命令：
+
+```bash
+conda run -n loreweaver python -m loreweaver.cli extract --list-windows --only pending --limit 20
+conda run -n loreweaver python -m loreweaver.cli extract --window-range 21-40
+conda run -n loreweaver python -m loreweaver.cli extract --window-id doc_59331b17113e_ch0021_win0001
+```
+
 ---
 
 ## M1.6 混合召回、Union 与 Reranker

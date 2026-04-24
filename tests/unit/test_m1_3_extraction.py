@@ -12,6 +12,7 @@ from loreweaver.extraction.extractor import (
     estimate_cost,
     extract_document_windows,
     extract_window,
+    list_extraction_windows,
 )
 from loreweaver.extraction.locator import locate_quote, locate_span_anchors
 from loreweaver.extraction.retry import RetryPolicy
@@ -371,6 +372,46 @@ class M13ExtractionTests(unittest.TestCase):
             self.assertTrue(all(span.micro_topic for span in spans))
             self.assertTrue(all(span.micro_summary for span in spans))
             self.assertTrue(all(span.located_text for span in spans))
+
+            status_report = list_extraction_windows(
+                storage_config=storage_config,
+                document_id=ingest_report["document"]["document_id"],
+                only="all",
+            )
+            self.assertEqual(status_report["windows"][0]["status"], "extracted")
+            self.assertEqual(status_report["windows"][1]["status"], "extracted")
+            self.assertEqual(status_report["windows"][2]["status"], "pending")
+
+            range_report = extract_document_windows(
+                config=config,
+                storage_config=storage_config,
+                models_config=models_config,
+                run_id="extract_range_test",
+                document_id=ingest_report["document"]["document_id"],
+                window_ranges=["3-3"],
+                mock=True,
+            )
+            self.assertEqual(range_report["window_count"], 1)
+            self.assertEqual(range_report["span_count"], 2)
+
+            window_id = status_report["windows"][0]["window_id"]
+            rerun_report = extract_document_windows(
+                config=config,
+                storage_config=storage_config,
+                models_config=models_config,
+                run_id="extract_window_test",
+                document_id=ingest_report["document"]["document_id"],
+                window_ids=[window_id],
+                mock=True,
+            )
+            self.assertEqual(rerun_report["window_count"], 1)
+            self.assertEqual(rerun_report["span_count"], 2)
+
+            final_spans = store.list_spans(
+                ingest_report["document"]["document_id"],
+                located_only=True,
+            )
+            self.assertEqual(len(final_spans), 6)
 
     def test_cost_estimate_uses_configured_prices(self) -> None:
         cost = estimate_cost(

@@ -71,6 +71,9 @@ For local plumbing checks without API calls:
 
 ```bash
 python3 -m loreweaver.cli extract --limit 10 --mock
+python3 -m loreweaver.cli extract --list-windows --only pending --limit 20
+python3 -m loreweaver.cli extract --window-range 21-40
+python3 -m loreweaver.cli extract --window-id doc_59331b17113e_ch0021_win0001
 python3 -m loreweaver.cli index --mock-embeddings
 python3 -m loreweaver.cli spans --top-salience 30
 python3 -m loreweaver.cli graph --no-neo4j

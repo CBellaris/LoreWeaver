@@ -99,12 +99,7 @@ class SQLiteStore:
         with self.connect() as connection:
             connection.executescript(
                 """
-                DROP TABLE IF EXISTS locator_candidates;
-                DROP TABLE IF EXISTS extraction_failures;
-                DROP TABLE IF EXISTS extraction_reports;
-                DROP TABLE IF EXISTS spans;
-
-                CREATE TABLE spans (
+                CREATE TABLE IF NOT EXISTS spans (
                     span_id TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
                     chapter_id TEXT NOT NULL,
@@ -133,13 +128,13 @@ class SQLiteStore:
                     FOREIGN KEY(window_id) REFERENCES candidate_windows(window_id)
                 );
 
-                CREATE INDEX idx_spans_document_status
+                CREATE INDEX IF NOT EXISTS idx_spans_document_status
                 ON spans(document_id, locator_status);
 
-                CREATE INDEX idx_spans_window
+                CREATE INDEX IF NOT EXISTS idx_spans_window
                 ON spans(window_id);
 
-                CREATE TABLE locator_candidates (
+                CREATE TABLE IF NOT EXISTS locator_candidates (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     span_id TEXT NOT NULL,
                     start_idx INTEGER NOT NULL,
@@ -151,10 +146,10 @@ class SQLiteStore:
                     FOREIGN KEY(span_id) REFERENCES spans(span_id)
                 );
 
-                CREATE INDEX idx_locator_candidates_span
+                CREATE INDEX IF NOT EXISTS idx_locator_candidates_span
                 ON locator_candidates(span_id);
 
-                CREATE TABLE extraction_failures (
+                CREATE TABLE IF NOT EXISTS extraction_failures (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     window_id TEXT NOT NULL,
                     span_id TEXT,
@@ -167,10 +162,10 @@ class SQLiteStore:
                     FOREIGN KEY(span_id) REFERENCES spans(span_id)
                 );
 
-                CREATE INDEX idx_extraction_failures_window
+                CREATE INDEX IF NOT EXISTS idx_extraction_failures_window
                 ON extraction_failures(window_id);
 
-                CREATE TABLE extraction_reports (
+                CREATE TABLE IF NOT EXISTS extraction_reports (
                     run_id TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
                     report_json TEXT NOT NULL,
@@ -501,6 +496,11 @@ class SQLiteStore:
             ]
             for document_id in document_ids:
                 self._delete_graph_outputs_for_document(connection, document_id)
+            if _table_exists(connection, "extraction_failures"):
+                connection.execute(
+                    f"DELETE FROM extraction_failures WHERE window_id IN ({placeholders})",
+                    ids,
+                )
             if not _table_exists(connection, "spans"):
                 return
             span_ids = [
@@ -537,6 +537,92 @@ class SQLiteStore:
                 f"WHERE window_id IN ({placeholders})",
                 ids,
             )
+
+    def list_window_extraction_status(self, document_id: str) -> list[dict]:
+        with self.connect() as connection:
+            has_spans = _table_exists(connection, "spans")
+            has_failures = _table_exists(connection, "extraction_failures")
+            query = """
+                SELECT
+                    w.window_id,
+                    w.document_id,
+                    w.chapter_id,
+                    c.chapter_index,
+                    w.window_index,
+                    w.window_start,
+                    w.window_end,
+                    length(w.text) AS char_count,
+                    COALESCE(s.span_count, 0) AS span_count,
+                    COALESCE(s.located_count, 0) AS located_count,
+                    COALESCE(s.failed_span_count, 0) AS failed_span_count
+            """
+            if has_failures:
+                query += ", COALESCE(f.failure_count, 0) AS failure_count"
+            else:
+                query += ", 0 AS failure_count"
+            query += """
+                FROM candidate_windows w
+                JOIN chapters c ON w.chapter_id = c.chapter_id
+            """
+            if has_spans:
+                query += """
+                    LEFT JOIN (
+                        SELECT
+                            window_id,
+                            COUNT(*) AS span_count,
+                            SUM(CASE WHEN locator_status = 'located' THEN 1 ELSE 0 END)
+                                AS located_count,
+                            SUM(CASE WHEN locator_status != 'located' THEN 1 ELSE 0 END)
+                                AS failed_span_count
+                        FROM spans
+                        GROUP BY window_id
+                    ) s ON s.window_id = w.window_id
+                """
+            else:
+                query += """
+                    LEFT JOIN (
+                        SELECT NULL AS window_id, 0 AS span_count, 0 AS located_count,
+                            0 AS failed_span_count
+                    ) s ON 0
+                """
+            if has_failures:
+                query += """
+                    LEFT JOIN (
+                        SELECT window_id, COUNT(*) AS failure_count
+                        FROM extraction_failures
+                        GROUP BY window_id
+                    ) f ON f.window_id = w.window_id
+                """
+            query += """
+                WHERE w.document_id = ?
+                ORDER BY c.chapter_index, w.window_index
+            """
+            rows = connection.execute(query, (document_id,)).fetchall()
+        statuses = []
+        for index, row in enumerate(rows, start=1):
+            span_count = int(row["span_count"] or 0)
+            located_count = int(row["located_count"] or 0)
+            failed_span_count = int(row["failed_span_count"] or 0)
+            failure_count = int(row["failure_count"] or 0)
+            extracted = span_count > 0 or failure_count > 0
+            statuses.append(
+                {
+                    "global_index": index,
+                    "window_id": row["window_id"],
+                    "document_id": row["document_id"],
+                    "chapter_id": row["chapter_id"],
+                    "chapter_index": row["chapter_index"],
+                    "window_index": row["window_index"],
+                    "window_start": row["window_start"],
+                    "window_end": row["window_end"],
+                    "char_count": row["char_count"],
+                    "span_count": span_count,
+                    "located_count": located_count,
+                    "failed_count": failed_span_count + failure_count,
+                    "status": "extracted" if extracted else "pending",
+                }
+            )
+        return statuses
 
     def update_window_uncovered_text(self, window_id: str, uncovered_text: str) -> None:
         with self.connect() as connection:

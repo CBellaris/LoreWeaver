@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loreweaver import __version__
 from loreweaver.config import load_config
-from loreweaver.extraction.extractor import extract_document_windows
+from loreweaver.extraction.extractor import extract_document_windows, list_extraction_windows
 from loreweaver.graph.center_span import build_m15_graph, list_graph_clusters
 from loreweaver.ingest.pipeline import ingest_text
 from loreweaver.ingest.window_splitter import build_candidate_windows
@@ -139,7 +139,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     extract_parser.add_argument(
         "--window-id",
-        help="Extract exactly one candidate window.",
+        action="append",
+        help="Extract a candidate window id. Can be repeated or comma-separated.",
+    )
+    extract_parser.add_argument(
+        "--window-range",
+        action="append",
+        help="Extract 1-based global window range, for example 21-40 or 21:40.",
+    )
+    extract_parser.add_argument(
+        "--list-windows",
+        action="store_true",
+        help="List candidate windows and extraction status instead of extracting.",
+    )
+    extract_parser.add_argument(
+        "--only",
+        choices=("all", "extracted", "pending"),
+        default="all",
+        help="When used with --list-windows, filter by extraction status.",
     )
     extract_parser.add_argument(
         "--mock",
@@ -454,6 +471,23 @@ def _extract(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     models_config = load_config(args.models_config)
+    if args.list_windows:
+        report = list_extraction_windows(
+            storage_config=storage_config,
+            document_id=args.document_id,
+            only=args.only,
+            limit=args.limit,
+        )
+        print("command: extract")
+        print("mode: list-windows")
+        print(f"document_id: {report['document_id']}")
+        print(f"sqlite_path: {report['sqlite_path']}")
+        print(f"only: {report['only']}")
+        print(f"window_count: {report['window_count']}")
+        _print_extraction_window_status(report["windows"])
+        print("status: ok")
+        return 0
+
     run_id = new_run_id("extract")
     progress = _build_extract_progress_printer() if not args.no_progress else None
 
@@ -465,7 +499,8 @@ def _extract(args: argparse.Namespace) -> int:
         document_id=args.document_id,
         limit=args.limit,
         offset=args.offset,
-        window_id=args.window_id,
+        window_ids=args.window_id,
+        window_ranges=args.window_range,
         mock=args.mock,
         progress_callback=progress,
     )
@@ -820,6 +855,21 @@ def _print_search_results(results: list[dict]) -> None:
         entities = result.get("entities") or []
         if entities:
             print(f"   entities: {', '.join(str(entity) for entity in entities[:8])}")
+
+
+def _print_extraction_window_status(windows: list[dict]) -> None:
+    for window in windows:
+        print(
+            f"{window['global_index']}. window_id={window['window_id']} "
+            f"status={window['status']} "
+            f"chapter={window['chapter_index']} "
+            f"window_index={window['window_index']} "
+            f"range={window['window_start']}-{window['window_end']} "
+            f"chars={window['char_count']} "
+            f"spans={window['span_count']} "
+            f"located={window['located_count']} "
+            f"failed={window['failed_count']}"
+        )
 
 
 def _print_graph_clusters(clusters: list[dict]) -> None:

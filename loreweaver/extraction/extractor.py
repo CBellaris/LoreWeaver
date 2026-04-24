@@ -188,6 +188,8 @@ def extract_document_windows(
     limit: int | None = None,
     offset: int = 0,
     window_id: str | None = None,
+    window_ids: list[str] | None = None,
+    window_ranges: list[str] | None = None,
     mock: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
@@ -200,10 +202,13 @@ def extract_document_windows(
     windows = store.list_candidate_windows(document.document_id)
     if not windows:
         raise ValueError(f"No candidate windows found for document_id={document.document_id}")
-    if window_id is not None:
-        windows = [window for window in windows if window.window_id == window_id]
-        if not windows:
-            raise ValueError(f"Candidate window not found: {window_id}")
+    selected_window_ids = _normalize_window_ids(window_id=window_id, window_ids=window_ids)
+    if selected_window_ids or window_ranges:
+        windows = _select_windows(
+            windows,
+            window_ids=selected_window_ids,
+            window_ranges=window_ranges or [],
+        )
     else:
         windows = windows[offset:]
         if limit is not None:
@@ -259,7 +264,8 @@ def extract_document_windows(
                 "mock": mock,
                 "total_windows": len(windows),
                 "window_offset": offset,
-                "window_id": window_id,
+                "window_ids": selected_window_ids,
+                "window_ranges": window_ranges or [],
             },
         )
 
@@ -379,6 +385,96 @@ def extract_document_windows(
             },
         )
     return report
+
+
+def list_extraction_windows(
+    *,
+    storage_config: AppConfig,
+    document_id: str | None = None,
+    only: str = "all",
+    limit: int | None = None,
+) -> dict[str, Any]:
+    store = SQLiteStore(storage_config.sqlite_path)
+    store.initialize()
+    store.initialize_extraction_tables()
+    document = store.get_document(document_id)
+    statuses = store.list_window_extraction_status(document.document_id)
+    if only == "extracted":
+        statuses = [status for status in statuses if status["status"] == "extracted"]
+    elif only == "pending":
+        statuses = [status for status in statuses if status["status"] == "pending"]
+    elif only != "all":
+        raise ValueError("--only must be one of: all, extracted, pending")
+    if limit is not None:
+        statuses = statuses[:limit]
+    return {
+        "document_id": document.document_id,
+        "sqlite_path": str(storage_config.sqlite_path),
+        "only": only,
+        "window_count": len(statuses),
+        "extracted_total": sum(1 for status in statuses if status["status"] == "extracted"),
+        "pending_total": sum(1 for status in statuses if status["status"] == "pending"),
+        "windows": statuses,
+    }
+
+
+def _normalize_window_ids(
+    *,
+    window_id: str | None,
+    window_ids: list[str] | None,
+) -> list[str]:
+    raw_values: list[str] = []
+    if window_id:
+        raw_values.append(window_id)
+    raw_values.extend(window_ids or [])
+    normalized: list[str] = []
+    for raw_value in raw_values:
+        for item in raw_value.split(","):
+            value = item.strip()
+            if value and value not in normalized:
+                normalized.append(value)
+    return normalized
+
+
+def _select_windows(
+    windows: list[CandidateWindow],
+    *,
+    window_ids: list[str],
+    window_ranges: list[str],
+) -> list[CandidateWindow]:
+    by_id = {window.window_id: window for window in windows}
+    selected_ids: list[str] = []
+    missing_ids = [window_id for window_id in window_ids if window_id not in by_id]
+    if missing_ids:
+        raise ValueError(f"Candidate window not found: {', '.join(missing_ids)}")
+    selected_ids.extend(window_id for window_id in window_ids if window_id not in selected_ids)
+
+    for range_text in window_ranges:
+        start, end = _parse_window_range(range_text, total_windows=len(windows))
+        for window in windows[start - 1 : end]:
+            if window.window_id not in selected_ids:
+                selected_ids.append(window.window_id)
+    if not selected_ids:
+        raise ValueError("No candidate windows selected.")
+    return [by_id[window_id] for window_id in selected_ids]
+
+
+def _parse_window_range(range_text: str, *, total_windows: int) -> tuple[int, int]:
+    value = range_text.strip()
+    separator = "-" if "-" in value else ":"
+    if separator not in value:
+        index = int(value)
+        start = index
+        end = index
+    else:
+        raw_start, raw_end = value.split(separator, 1)
+        start = int(raw_start.strip())
+        end = int(raw_end.strip())
+    if start < 1 or end < start or end > total_windows:
+        raise ValueError(
+            f"Invalid window range {range_text!r}; expected 1-based range within 1-{total_windows}."
+        )
+    return start, end
 
 
 def extract_window(
