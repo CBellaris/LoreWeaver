@@ -4,7 +4,7 @@ LoreWeaver is an LLM-driven analysis engine for long-form fictional worlds. The 
 
 ## Current Stage
 
-M1.5 is the lightweight Center Span graph skeleton stage. The current implementation provides:
+M1.6 is the hybrid retrieval and reranking stage. The current implementation provides:
 
 - Python package skeleton
 - CLI entry point
@@ -17,6 +17,7 @@ M1.5 is the lightweight Center Span graph skeleton stage. The current implementa
 - M1.3 OpenAI-compatible LLM extraction, multi-Span discovery per window, start/end anchor location with overlong-anchor trimming, Span persistence with optional `located_text`, window-level `uncovered_text` debug output, failure queues, progress timing, and API cost estimates
 - M1.4 embedding cache in SQLite, local-or-remote Qdrant vector indexing, local BM25 indexing with Chinese-friendly tokenization, and standalone `search-vector` / `search-bm25` debug commands
 - M1.5 high-salience Span inspection, embedding-aware CenterSpanCluster construction with deterministic rule fallback, SQLite graph mirror, optional Neo4j sync, graph reports, and cluster member inspection
+- M1.6 graph + vector + BM25 hybrid retrieval, Union candidate fusion, pluggable reranker interface, SiliconFlow reranker provider, mock/noop reranker fallbacks, retrieval reports, and `query_runs` persistence
 
 The first test sample is:
 
@@ -58,7 +59,7 @@ loreweaver ask
 loreweaver eval
 ```
 
-`ingest`, `windows`, `extract`, `index`, `search-vector`, `search-bm25`, `spans`, and `graph` are implemented; later M1 commands still report their run id and placeholder status.
+`ingest`, `windows`, `extract`, `index`, `search-vector`, `search-bm25`, `spans`, `graph`, and `retrieve` are implemented; later M1 commands still report their run id and placeholder status.
 
 For a paid API smoke test, set `SILICONFLOW_API_KEY` in your environment and start with a small limit:
 
@@ -79,6 +80,7 @@ python3 -m loreweaver.cli spans --top-salience 30
 python3 -m loreweaver.cli graph --no-neo4j
 python3 -m loreweaver.cli graph --no-neo4j --no-embeddings
 python3 -m loreweaver.cli graph --list
+python3 -m loreweaver.cli retrieve "塞西尔家族为什么衰落？" --mock-embeddings --mock-reranker
 ```
 
 ## Data Directories

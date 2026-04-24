@@ -25,6 +25,8 @@ models:
     input_yuan_per_1k: 0
     use_dimensions_param: false
   reranker:
-    provider: "local"
-    name: "BAAI/bge-reranker-v2-m3"
+    provider: "siliconflow"
+    name: "Qwen/Qwen3-Reranker-0.6B"
+    fallback_name: "BAAI/bge-reranker-v2-m3"
     enabled: false
+    timeout_seconds: 30

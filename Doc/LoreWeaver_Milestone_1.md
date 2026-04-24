@@ -1627,6 +1627,61 @@ coverage = 问题关键词与候选 Span 实体/关键词的交集比例
 
 混合召回链路可运行，Top-K 结果能为证据包组装提供稳定输入。
 
+### 技术选型记录
+
+M1.6 Reranker 采用“可插拔接口 + 远程优先 + 本地/禁用降级”的策略：
+
+- 主选型：`Qwen/Qwen3-Reranker-0.6B` via SiliconFlow `/v1/rerank`；
+- fallback 模型：`BAAI/bge-reranker-v2-m3`；
+- 工程接口：`MockReranker`、`SiliconFlowReranker`、`NoopReranker` 共用 `question + span_text_for_rerank` 输入；
+- M1.6 初期不启用硬 `min_rerank_score`，先保存原始分数、模型、provider、rerank 文本 hash 与 Top-K 排名，等人工评估后再定阈值；
+- 默认开发验收优先使用 `--mock-reranker` 或 `--no-reranker`，避免本地环境和远程模型可用性阻塞主链路。
+
+### 验收记录
+
+完成日期：2026-04-24
+
+实际完成内容：
+
+- 新增 `loreweaver retrieve` CLI，跑通图召回、向量召回、BM25 召回、Union 融合与 Reranker 精排；
+- 实现 `Query Router`，支持 `character_relation / faction_history / location / power_system / timeline / unknown`；
+- 实现 SQLite graph mirror 召回，读取 `center_span_clusters` 与 `SUPPORTS` 边，并补充中心 Span；
+- 实现 BM25 与 Qdrant 向量召回适配，向量召回失败时会记录错误并允许其余召回路径继续；
+- 实现 Union 去重与融合分，保留 `sources`、各路原始分、归一化分、Cluster 命中信息；
+- 实现 Reranker 接口与 `MockReranker`、`SiliconFlowReranker`、`NoopReranker`；
+- 每次查询输出 retrieval report，并写入 SQLite `query_runs`。
+
+关键产物路径：
+
+- `loreweaver/retrieval/pipeline.py`
+- `loreweaver/retrieval/graph_retriever.py`
+- `loreweaver/retrieval/vector_retriever.py`
+- `loreweaver/retrieval/bm25_retriever.py`
+- `loreweaver/retrieval/union.py`
+- `loreweaver/retrieval/reranker.py`
+- `tests/unit/test_m1_6_retrieval.py`
+- `data/runs/retrieve_20260424T084827Z_73ec4d0a_retrieval_report.json`
+
+执行过的验证命令：
+
+```bash
+conda run -n loreweaver python -m compileall loreweaver
+conda run -n loreweaver python -m pytest tests/unit/test_m1_6_retrieval.py
+conda run -n loreweaver python -m pytest
+conda run -n loreweaver python -m ruff check loreweaver tests
+conda run -n loreweaver python -m loreweaver.cli retrieve 塞西尔家族为什么会衰落 --mock-embeddings --mock-reranker
+```
+
+验收结论：M1.6 的本地可运行闭环已完成。当前样本文档上，CLI 烟测返回 `graph=36`、`vector=30`、`bm25=30`、`union=70`，并生成 mock rerank Top-15；全量 unit 为 `18/18` 通过。
+
+遗留问题或进入下一阶段的注意事项：
+
+- 真实 SiliconFlow Reranker 已完成 6 题小样本 live API 烟测，代表性报告包括 `data/runs/retrieve_20260424T085431Z_5064fbc4_retrieval_report.json`、`data/runs/retrieve_20260424T085503Z_c024fdf6_retrieval_report.json`、`data/runs/retrieve_20260424T085539Z_eb78d7d5_retrieval_report.json`；
+- live 烟测显示明确实体/地点/事实类问题 Top-K 质量较好，抽象力量体系与伏笔异常类问题仍需强化 query router、候选池构造与 rerank 输入；
+- 当前人工验收尚未覆盖 10 个手工问题，M1.7 前后应补齐 Top-K 证据相关性人工评分；
+- mock embedding 只验证链路连通性，不代表真实语义召回质量；
+- `min_rerank_score` 暂不启用，待人工评估后再按模型分布设置。
+
 ---
 
 ## M1.7 证据区间合并与 Evidence Pack 组装
@@ -1925,6 +1980,45 @@ notes: str
    - 典型坏例；
    - M2 前必须修复的问题；
    - 可推迟的问题。
+
+### 参数与结构 A/B 测试候选
+
+M1.9 不只做“跑一遍评估集”，还应承担一次集中调参与盲测，验证 M1.6-M1.8 中留下的关键假设。建议将每个候选改动作为独立实验项，使用同一批问题集对照 baseline，避免只凭单题感觉调整主链路。
+
+更完整的可调决策与实验清单见 `Doc/LoreWeaver_M1_Adjustable_Decisions.md`。该文档当前已整理 M1.6 召回模块，其他模块待逐步补充。
+
+候选实验：
+
+- Query Router 增强：为 `复活 / 异常 / 伏笔 / 暗示 / 谜团 / 未解释` 等问题增加 `mystery` 倾向，使其优先召回 mystery cluster、精神状态、身份异常、黑钢棺材、天体现象等候选；这是 M1.6 live 测试暴露出的重点 hint，应放入 A/B 或盲测而不是立即固化。
+- CenterSpanCluster 中心选择：增加/替换更多人工 cluster 中心，尤其补齐 `mystery`、`power_system`、`timeline/history` 的中心 Span，测试人工中心是否显著改善宏观问题召回。
+- 图召回参数：对比 `graph_cluster_top_k`、`graph_span_per_cluster`、Cluster 类型偏置、中心 Span 本身是否强制保留等设置。
+- 向量/BM25 参数：对比 `vector_top_k`、`bm25_top_k`、`union_max_candidates`，记录候选池扩大后 Reranker 是否能稳定压住噪声。
+- Union 融合权重：对比多源命中奖励、图召回 bonus、实体覆盖分、BM25 精确实体命中分的权重。
+- Reranker 输入文本：对比是否加入 `span_type`、`located_text` 短截断、相邻上下文摘要、Cluster 信息；重点观察抽象设定类与伏笔类问题。
+- Reranker 模型与模式：对比 mock/noop、`Qwen/Qwen3-Reranker-0.6B`、`BAAI/bge-reranker-v2-m3`，必要时补测更大 Qwen3 Reranker。
+- Evidence Pack 组装参数：对比 `pre_context_chars`、`post_context_chars`、`merge_gap_chars`、`max_blocks` 对引用充分性与噪声的影响。
+
+建议记录字段：
+
+```text
+experiment_id: str
+baseline_or_variant: baseline | variant
+changed_knobs: dict
+question_set_id: str
+blind_label: str | None
+retrieval_quality_avg: float
+evidence_sufficient_avg: float
+citation_valid_avg: float
+answer_credible_avg: float
+notes: str
+```
+
+盲测方式：
+
+- 同一问题用 baseline 与 variant 各跑一次；
+- 隐去实验名，只保留 `A/B` 或随机标签给人工评分；
+- 先完成评分，再揭示实验配置；
+- 若 variant 只在少数题上变好、整体指标下降，不进入默认主链路，只作为问题类型特化策略保留。
 
 ### 独立验收
 

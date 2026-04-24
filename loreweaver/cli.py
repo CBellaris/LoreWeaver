@@ -18,11 +18,11 @@ from loreweaver.indexing.pipeline import (
     search_vector_index,
 )
 from loreweaver.logging import configure_logging, new_run_id
+from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
 
 
 PIPELINE_COMMANDS = (
-    "retrieve",
     "ask",
     "eval",
 )
@@ -323,6 +323,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="When used with --list, show one cluster and its member spans.",
     )
     graph_parser.set_defaults(func=_graph)
+
+    retrieve_parser = subparsers.add_parser(
+        "retrieve",
+        help="M1.6 retrieve: run graph + vector + BM25 hybrid retrieval and rerank candidates.",
+    )
+    retrieve_parser.add_argument("question", help="User question to retrieve evidence for.")
+    retrieve_parser.add_argument(
+        "--document-id",
+        help="Document id to retrieve from. Defaults to the latest SQLite document.",
+    )
+    retrieve_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite, Qdrant, and BM25 settings.",
+    )
+    retrieve_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing embedding and reranker settings.",
+    )
+    retrieve_parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local mock embeddings for vector query embedding.",
+    )
+    retrieve_parser.add_argument(
+        "--mock-reranker",
+        action="store_true",
+        help="Use deterministic local mock reranking instead of a live reranker API.",
+    )
+    retrieve_parser.add_argument(
+        "--no-reranker",
+        action="store_true",
+        help="Skip reranking and keep Union fused-score ordering.",
+    )
+    retrieve_parser.set_defaults(func=_retrieve)
 
     for command in PIPELINE_COMMANDS:
         command_parser = subparsers.add_parser(
@@ -695,6 +731,46 @@ def _graph(args: argparse.Namespace) -> int:
     return 0
 
 
+def _retrieve(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    models_config = load_config(args.models_config)
+    report = retrieve_m16(
+        config=config,
+        storage_config=storage_config,
+        models_config=models_config,
+        question=args.question,
+        document_id=args.document_id,
+        mock_embeddings=args.mock_embeddings,
+        mock_reranker=args.mock_reranker,
+        no_reranker=args.no_reranker,
+    )
+
+    print(f"run_id: {report['run_id']}")
+    print("command: retrieve")
+    print(f"document_id: {report['document_id']}")
+    print(f"query_type: {report['query_type']}")
+    print(f"question: {report['question']}")
+    print(f"report_path: {report['report_path']}")
+    retrieval = report["retrieval"]
+    print(
+        "source_counts: "
+        f"graph={retrieval['graph'].get('count', 0)} "
+        f"vector={retrieval['vector'].get('count', 0)} "
+        f"bm25={retrieval['bm25'].get('count', 0)} "
+        f"union={retrieval['union'].get('candidate_count', 0)}"
+    )
+    print(
+        "reranker: "
+        f"{report['reranker']['provider']} "
+        f"{report['reranker']['model']} "
+        f"inputs={report['reranker']['input_count']}"
+    )
+    _print_retrieve_results(report["top_results"])
+    print("status: ok")
+    return 0
+
+
 def _build_extract_progress_printer() -> object:
     totals = {
         "spans": 0,
@@ -908,6 +984,23 @@ def _print_graph_clusters(clusters: list[dict]) -> None:
             topic = member.get("micro_topic")
             if topic:
                 print(f"     topic: {_truncate(topic, 100)}")
+
+
+def _print_retrieve_results(results: list[dict]) -> None:
+    for result in results:
+        print(
+            f"{result['rank']}. span_id={result['span_id']} "
+            f"rerank={result['rerank_score']:.6f} "
+            f"fused={result['fused_score']:.6f} "
+            f"sources={','.join(result['sources'])} "
+            f"chapter_id={result['chapter_id']} "
+            f"range={result['span_start_idx']}-{result['span_end_idx']}"
+        )
+        print(f"   topic: {result['micro_topic']}")
+        print(f"   summary: {_truncate(result['micro_summary'], 140)}")
+        entities = result.get("entities") or []
+        if entities:
+            print(f"   entities: {', '.join(str(entity) for entity in entities[:8])}")
 
 
 def _truncate(text: str, limit: int) -> str:

@@ -877,6 +877,29 @@ class SQLiteStore:
                 (run_id, document_id, json.dumps(report, ensure_ascii=False, indent=2)),
             )
 
+    def insert_query_run(
+        self,
+        query_id: str,
+        document_id: str,
+        user_question: str,
+        report: dict,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO query_runs (
+                    query_id, document_id, user_question, report_json, created_at
+                )
+                VALUES (?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    query_id,
+                    document_id,
+                    user_question,
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                ),
+            )
+
     def replace_graph(
         self,
         *,
