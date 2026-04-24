@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from ast import literal_eval
@@ -30,6 +31,7 @@ class AppConfig:
 
 
 def load_config(path: str | Path = "configs/default.yaml") -> AppConfig:
+    load_env_file()
     config_path = Path(path)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -48,6 +50,22 @@ def load_config(path: str | Path = "configs/default.yaml") -> AppConfig:
         raise ValueError(f"Config root must be a mapping: {config_path}")
 
     return AppConfig(path=config_path, values=values)
+
+
+def load_env_file(path: str | Path = ".env") -> None:
+    """Load local .env values without overriding the shell environment."""
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _load_simple_yaml(raw_config: str) -> dict[str, Any]:

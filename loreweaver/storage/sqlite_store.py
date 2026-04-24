@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable
 
 from loreweaver.models.chapter import Chapter
+from loreweaver.models.cluster import CenterSpanCluster, SpanEdge
 from loreweaver.models.document import Document
 from loreweaver.models.span import Span
 from loreweaver.models.window import CandidateWindow
@@ -216,6 +217,61 @@ class SQLiteStore:
                 """
             )
 
+    def initialize_graph_tables(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS center_span_clusters (
+                    cluster_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    center_span_id TEXT NOT NULL,
+                    cluster_name TEXT NOT NULL,
+                    cluster_type TEXT NOT NULL,
+                    micro_summary TEXT NOT NULL,
+                    member_span_ids_json TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id),
+                    FOREIGN KEY(center_span_id) REFERENCES spans(span_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_center_span_clusters_document
+                ON center_span_clusters(document_id, cluster_type);
+
+                CREATE TABLE IF NOT EXISTS span_edges (
+                    edge_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    from_id TEXT NOT NULL,
+                    to_id TEXT NOT NULL,
+                    from_type TEXT NOT NULL,
+                    to_type TEXT NOT NULL,
+                    edge_type TEXT NOT NULL,
+                    weight REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_span_edges_document_type
+                ON span_edges(document_id, edge_type);
+
+                CREATE INDEX IF NOT EXISTS idx_span_edges_from
+                ON span_edges(from_id);
+
+                CREATE INDEX IF NOT EXISTS idx_span_edges_to
+                ON span_edges(to_id);
+
+                CREATE TABLE IF NOT EXISTS graph_reports (
+                    run_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id)
+                );
+                """
+            )
+
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
@@ -255,6 +311,7 @@ class SQLiteStore:
                     document.created_at.isoformat(),
                 ),
             )
+            self._delete_graph_outputs_for_document(connection, document.document_id)
             self._delete_extraction_outputs_for_document(connection, document.document_id)
             connection.execute(
                 "DELETE FROM candidate_windows WHERE document_id = ?",
@@ -337,6 +394,7 @@ class SQLiteStore:
         windows: Iterable[CandidateWindow],
     ) -> None:
         with self.connect() as connection:
+            self._delete_graph_outputs_for_document(connection, document_id)
             self._delete_extraction_outputs_for_document(connection, document_id)
             connection.execute(
                 "DELETE FROM candidate_windows WHERE document_id = ?",
@@ -397,6 +455,22 @@ class SQLiteStore:
             span_ids,
         )
 
+    def _delete_graph_outputs_for_document(
+        self,
+        connection: sqlite3.Connection,
+        document_id: str,
+    ) -> None:
+        if _table_exists(connection, "span_edges"):
+            connection.execute(
+                "DELETE FROM span_edges WHERE document_id = ?",
+                (document_id,),
+            )
+        if _table_exists(connection, "center_span_clusters"):
+            connection.execute(
+                "DELETE FROM center_span_clusters WHERE document_id = ?",
+                (document_id,),
+            )
+
     def list_candidate_windows(self, document_id: str) -> list[CandidateWindow]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -416,9 +490,19 @@ class SQLiteStore:
         if not ids:
             return
         with self.connect() as connection:
+            placeholders = ",".join("?" for _ in ids)
+            document_ids = [
+                row["document_id"]
+                for row in connection.execute(
+                    f"SELECT DISTINCT document_id FROM candidate_windows "
+                    f"WHERE window_id IN ({placeholders})",
+                    ids,
+                ).fetchall()
+            ]
+            for document_id in document_ids:
+                self._delete_graph_outputs_for_document(connection, document_id)
             if not _table_exists(connection, "spans"):
                 return
-            placeholders = ",".join("?" for _ in ids)
             span_ids = [
                 row["span_id"]
                 for row in connection.execute(
@@ -550,6 +634,19 @@ class SQLiteStore:
         query += " ORDER BY window_start, span_id"
         with self.connect() as connection:
             rows = connection.execute(query, params).fetchall()
+        return [_span_from_row(row) for row in rows]
+
+    def list_top_salience_spans(self, document_id: str, *, limit: int = 30) -> list[Span]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM spans
+                WHERE document_id = ? AND locator_status = ?
+                ORDER BY salience_score DESC, span_start_idx ASC, span_id ASC
+                LIMIT ?
+                """,
+                (document_id, "located", limit),
+            ).fetchall()
         return [_span_from_row(row) for row in rows]
 
     def get_span(self, span_id: str) -> Span:
@@ -694,6 +791,121 @@ class SQLiteStore:
                 (run_id, document_id, json.dumps(report, ensure_ascii=False, indent=2)),
             )
 
+    def replace_graph(
+        self,
+        *,
+        document_id: str,
+        clusters: Iterable[CenterSpanCluster],
+        edges: Iterable[SpanEdge],
+    ) -> None:
+        cluster_list = list(clusters)
+        edge_list = list(edges)
+        with self.connect() as connection:
+            connection.execute(
+                "DELETE FROM span_edges WHERE document_id = ?",
+                (document_id,),
+            )
+            connection.execute(
+                "DELETE FROM center_span_clusters WHERE document_id = ?",
+                (document_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO center_span_clusters (
+                    cluster_id, document_id, center_span_id, cluster_name, cluster_type,
+                    micro_summary, member_span_ids_json, confidence, status, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        cluster.cluster_id,
+                        cluster.document_id,
+                        cluster.center_span_id,
+                        cluster.cluster_name,
+                        cluster.cluster_type,
+                        cluster.micro_summary,
+                        json.dumps(cluster.member_span_ids, ensure_ascii=False),
+                        cluster.confidence,
+                        cluster.status,
+                        cluster.created_at.isoformat(),
+                    )
+                    for cluster in cluster_list
+                ],
+            )
+            connection.executemany(
+                """
+                INSERT INTO span_edges (
+                    edge_id, document_id, from_id, to_id, from_type, to_type,
+                    edge_type, weight, source, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        edge.edge_id,
+                        edge.document_id,
+                        edge.from_id,
+                        edge.to_id,
+                        edge.from_type,
+                        edge.to_type,
+                        edge.edge_type,
+                        edge.weight,
+                        edge.source,
+                        edge.created_at.isoformat(),
+                    )
+                    for edge in edge_list
+                ],
+            )
+
+    def list_center_span_clusters(
+        self,
+        document_id: str,
+        *,
+        cluster_id: str | None = None,
+    ) -> list[CenterSpanCluster]:
+        query = "SELECT * FROM center_span_clusters WHERE document_id = ?"
+        params: list[object] = [document_id]
+        if cluster_id is not None:
+            query += " AND cluster_id = ?"
+            params.append(cluster_id)
+        query += " ORDER BY cluster_type, cluster_name, cluster_id"
+        with self.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_cluster_from_row(row) for row in rows]
+
+    def list_span_edges(
+        self,
+        document_id: str,
+        *,
+        edge_type: str | None = None,
+        from_id: str | None = None,
+    ) -> list[SpanEdge]:
+        query = "SELECT * FROM span_edges WHERE document_id = ?"
+        params: list[object] = [document_id]
+        if edge_type is not None:
+            query += " AND edge_type = ?"
+            params.append(edge_type)
+        if from_id is not None:
+            query += " AND from_id = ?"
+            params.append(from_id)
+        query += " ORDER BY edge_type, from_id, to_id"
+        with self.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_edge_from_row(row) for row in rows]
+
+    def insert_graph_report(self, run_id: str, document_id: str, report: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO graph_reports (
+                    run_id, document_id, report_json, created_at
+                )
+                VALUES (?, ?, ?, datetime('now'))
+                """,
+                (run_id, document_id, json.dumps(report, ensure_ascii=False, indent=2)),
+            )
+
 
 def _document_from_row(row: sqlite3.Row) -> Document:
     return Document(
@@ -779,5 +991,35 @@ def _span_from_row(row: sqlite3.Row) -> Span:
         located_text=row["located_text"],
         locator_confidence=row["locator_confidence"],
         locator_status=row["locator_status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _cluster_from_row(row: sqlite3.Row) -> CenterSpanCluster:
+    return CenterSpanCluster(
+        cluster_id=row["cluster_id"],
+        document_id=row["document_id"],
+        center_span_id=row["center_span_id"],
+        cluster_name=row["cluster_name"],
+        cluster_type=row["cluster_type"],
+        micro_summary=row["micro_summary"],
+        member_span_ids=json.loads(row["member_span_ids_json"]),
+        confidence=row["confidence"],
+        status=row["status"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _edge_from_row(row: sqlite3.Row) -> SpanEdge:
+    return SpanEdge(
+        edge_id=row["edge_id"],
+        document_id=row["document_id"],
+        from_id=row["from_id"],
+        to_id=row["to_id"],
+        from_type=row["from_type"],
+        to_type=row["to_type"],
+        edge_type=row["edge_type"],
+        weight=row["weight"],
+        source=row["source"],
         created_at=datetime.fromisoformat(row["created_at"]),
     )

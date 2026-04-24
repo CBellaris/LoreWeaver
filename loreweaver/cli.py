@@ -9,6 +9,7 @@ from pathlib import Path
 from loreweaver import __version__
 from loreweaver.config import load_config
 from loreweaver.extraction.extractor import extract_document_windows
+from loreweaver.graph.center_span import build_m15_graph, list_graph_clusters
 from loreweaver.ingest.pipeline import ingest_text
 from loreweaver.ingest.window_splitter import build_candidate_windows
 from loreweaver.indexing.pipeline import (
@@ -17,10 +18,10 @@ from loreweaver.indexing.pipeline import (
     search_vector_index,
 )
 from loreweaver.logging import configure_logging, new_run_id
+from loreweaver.storage.sqlite_store import SQLiteStore
 
 
 PIPELINE_COMMANDS = (
-    "graph",
     "retrieve",
     "ask",
     "eval",
@@ -230,6 +231,81 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     search_bm25_parser.add_argument("--top-k", type=int, default=5, help="Number of hits.")
     search_bm25_parser.set_defaults(func=_search_bm25)
+
+    spans_parser = subparsers.add_parser(
+        "spans",
+        help="M1.5 debug: list high-salience located spans for center-span selection.",
+    )
+    spans_parser.add_argument(
+        "--document-id",
+        help="Document id to inspect. Defaults to the latest SQLite document.",
+    )
+    spans_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing the SQLite path.",
+    )
+    spans_parser.add_argument(
+        "--top-salience",
+        type=int,
+        default=30,
+        help="Number of located spans to show by salience.",
+    )
+    spans_parser.set_defaults(func=_spans)
+
+    graph_parser = subparsers.add_parser(
+        "graph",
+        help="M1.5 graph: build or inspect the Center Span Cluster skeleton.",
+    )
+    graph_parser.add_argument(
+        "--document-id",
+        help="Document id to process. Defaults to the latest SQLite document.",
+    )
+    graph_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite and optional Neo4j settings.",
+    )
+    graph_parser.add_argument(
+        "--cluster-count",
+        type=int,
+        help="Maximum number of CenterSpanClusters to build.",
+    )
+    graph_parser.add_argument(
+        "--members-per-cluster",
+        type=int,
+        help="Member Span count per cluster.",
+    )
+    graph_parser.add_argument(
+        "--min-members",
+        type=int,
+        help="Minimum member Span count required for a cluster.",
+    )
+    graph_parser.add_argument(
+        "--sync-neo4j",
+        action="store_true",
+        help="Sync the graph to Neo4j even if storage.neo4j.enabled is false.",
+    )
+    graph_parser.add_argument(
+        "--no-neo4j",
+        action="store_true",
+        help="Skip Neo4j sync even if storage.neo4j.enabled is true.",
+    )
+    graph_parser.add_argument(
+        "--no-embeddings",
+        action="store_true",
+        help="Use the deterministic rule-only graph scoring fallback.",
+    )
+    graph_parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List existing clusters instead of rebuilding them.",
+    )
+    graph_parser.add_argument(
+        "--cluster-id",
+        help="When used with --list, show one cluster and its member spans.",
+    )
+    graph_parser.set_defaults(func=_graph)
 
     for command in PIPELINE_COMMANDS:
         command_parser = subparsers.add_parser(
@@ -496,6 +572,94 @@ def _search_bm25(args: argparse.Namespace) -> int:
     return 0
 
 
+def _spans(args: argparse.Namespace) -> int:
+    storage_config = _load_storage_config(args.storage_config)
+    store = SQLiteStore(storage_config.sqlite_path)
+    store.initialize()
+    document = store.get_document(args.document_id)
+    spans = store.list_top_salience_spans(document.document_id, limit=args.top_salience)
+
+    print("command: spans")
+    print(f"document_id: {document.document_id}")
+    print(f"result_count: {len(spans)}")
+    for index, span in enumerate(spans, start=1):
+        print(
+            f"{index}. span_id={span.span_id} "
+            f"salience={span.salience_score:.3f} "
+            f"type={span.span_type} "
+            f"chapter_id={span.chapter_id} "
+            f"range={span.span_start_idx}-{span.span_end_idx}"
+        )
+        print(f"   topic: {span.micro_topic}")
+        print(f"   summary: {_truncate(span.micro_summary, 120)}")
+        if span.entities:
+            print(f"   entities: {', '.join(span.entities[:8])}")
+        if span.topics:
+            print(f"   topics: {', '.join(span.topics[:8])}")
+    print("status: ok")
+    return 0
+
+
+def _graph(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    if args.list:
+        report = list_graph_clusters(
+            storage_config=storage_config,
+            document_id=args.document_id,
+            cluster_id=args.cluster_id,
+        )
+        print("command: graph")
+        print("mode: list")
+        print(f"document_id: {report['document_id']}")
+        print(f"cluster_count: {report['cluster_count']}")
+        print(f"edge_count: {report['edge_count']}")
+        _print_graph_clusters(report["clusters"])
+        print("status: ok")
+        return 0
+
+    run_id = new_run_id("graph")
+    sync_neo4j = None
+    if args.sync_neo4j:
+        sync_neo4j = True
+    if args.no_neo4j:
+        sync_neo4j = False
+    report = build_m15_graph(
+        config=config,
+        storage_config=storage_config,
+        run_id=run_id,
+        document_id=args.document_id,
+        cluster_count=args.cluster_count,
+        members_per_cluster=args.members_per_cluster,
+        min_members=args.min_members,
+        use_embeddings=False if args.no_embeddings else None,
+        sync_neo4j=sync_neo4j,
+    )
+
+    print(f"run_id: {run_id}")
+    print("command: graph")
+    print("mode: build")
+    print(f"document_id: {report['document_id']}")
+    print(f"sqlite_path: {report['sqlite_path']}")
+    print(f"report_path: {report['report_path']}")
+    print(f"cluster_count: {report['cluster_count']}")
+    print(f"edge_count: {report['edge_count']}")
+    scoring = report.get("scoring", {})
+    vector_load = scoring.get("vector_load", {})
+    if vector_load:
+        print(
+            "vector_load: "
+            f"{vector_load.get('loaded_count')}/{vector_load.get('requested_count')} "
+            f"coverage={vector_load.get('coverage')} "
+            f"source={vector_load.get('source')}"
+        )
+    print(f"edge_counts: {report['edge_counts']}")
+    print(f"neo4j: {report['neo4j']}")
+    _print_graph_clusters(report["clusters"])
+    print("status: ok")
+    return 0
+
+
 def _build_extract_progress_printer() -> object:
     totals = {
         "spans": 0,
@@ -656,6 +820,50 @@ def _print_search_results(results: list[dict]) -> None:
         entities = result.get("entities") or []
         if entities:
             print(f"   entities: {', '.join(str(entity) for entity in entities[:8])}")
+
+
+def _print_graph_clusters(clusters: list[dict]) -> None:
+    for index, cluster in enumerate(clusters, start=1):
+        print(
+            f"{index}. cluster_id={cluster['cluster_id']} "
+            f"type={cluster['cluster_type']} "
+            f"members={cluster['member_count']} "
+            f"confidence={cluster['confidence']:.4f}"
+        )
+        print(f"   name: {cluster['cluster_name']}")
+        print(f"   center_span_id: {cluster['center_span_id']}")
+        print(f"   summary: {_truncate(cluster['summary'], 140)}")
+        for member in cluster.get("members", [])[:8]:
+            reasons = member.get("reasons")
+            reason_text = f" reasons={','.join(reasons[:3])}" if reasons else ""
+            print(
+                f"   - span_id={member['span_id']} "
+                f"score={member.get('score', 0):.4f} "
+                f"type={member.get('span_type')} "
+                f"chapter_id={member.get('chapter_id')} "
+                f"range={member.get('range')}"
+                f"{reason_text}"
+            )
+            components = member.get("component_scores") or {}
+            if components:
+                print(
+                    "     scores: "
+                    f"vector={components.get('vector', 0):.3f} "
+                    f"entity={components.get('entity', 0):.3f} "
+                    f"topic={components.get('topic', 0):.3f} "
+                    f"bm25={components.get('bm25', 0):.3f} "
+                    f"chapter={components.get('chapter', 0):.3f} "
+                    f"salience={components.get('salience', 0):.3f}"
+                )
+            topic = member.get("micro_topic")
+            if topic:
+                print(f"     topic: {_truncate(topic, 100)}")
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
 
 
 def _placeholder(args: argparse.Namespace) -> int:

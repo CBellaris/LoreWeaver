@@ -1,6 +1,6 @@
 project:
   name: "LoreWeaver"
-  stage: "M1.4"
+  stage: "M1.5"
   data_dir: "data"
 
 sample:
@@ -52,6 +52,19 @@ retrieval:
   bm25_top_k: 30
   union_max_candidates: 80
   rerank_top_k: 15
+
+graph:
+  cluster_count: 4
+  members_per_cluster: 8
+  min_members_per_cluster: 5
+  use_embeddings: true
+  scoring_weights:
+    vector: 0.4
+    entity: 0.2
+    topic: 0.15
+    bm25: 0.1
+    chapter: 0.1
+    salience: 0.05
 
 indexing:
   embedding_dimensions: 1024

@@ -138,6 +138,26 @@ class QdrantVectorStore:
             for point in points
         ]
 
+    def retrieve_vectors(self, span_ids: list[str]) -> dict[str, list[float]]:
+        if not span_ids or not self.client.collection_exists(self.collection_name):
+            return {}
+        points = self.client.retrieve(
+            collection_name=self.collection_name,
+            ids=[point_id_for_span(span_id) for span_id in span_ids],
+            with_payload=True,
+            with_vectors=True,
+        )
+        vectors_by_span_id: dict[str, list[float]] = {}
+        for point in points:
+            payload = dict(getattr(point, "payload", {}) or {})
+            span_id = str(payload.get("span_id", ""))
+            vector = getattr(point, "vector", None)
+            if isinstance(vector, dict):
+                vector = next(iter(vector.values()), None)
+            if span_id and isinstance(vector, list):
+                vectors_by_span_id[span_id] = [float(value) for value in vector]
+        return vectors_by_span_id
+
     def count(self) -> int:
         if not self.client.collection_exists(self.collection_name):
             return 0

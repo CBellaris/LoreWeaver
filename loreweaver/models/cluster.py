@@ -1,4 +1,4 @@
-"""Cluster data model placeholders for M1.5."""
+"""Cluster data models for the M1.5 graph skeleton."""
 
 from __future__ import annotations
 
@@ -13,9 +13,22 @@ class CenterSpanCluster:
     center_span_id: str
     cluster_name: str
     cluster_type: str
-    summary: str
+    micro_summary: str
     member_span_ids: list[str]
     confidence: float
     status: str
     created_at: datetime
 
+
+@dataclass(frozen=True)
+class SpanEdge:
+    edge_id: str
+    document_id: str
+    from_id: str
+    to_id: str
+    from_type: str
+    to_type: str
+    edge_type: str
+    weight: float
+    source: str
+    created_at: datetime
