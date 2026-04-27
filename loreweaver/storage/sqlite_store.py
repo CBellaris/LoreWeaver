@@ -11,6 +11,7 @@ from typing import Iterable
 from loreweaver.models.chapter import Chapter
 from loreweaver.models.cluster import CenterSpanCluster, SpanEdge
 from loreweaver.models.document import Document
+from loreweaver.models.evidence import QueryEvidencePack
 from loreweaver.models.span import Span
 from loreweaver.models.window import CandidateWindow
 
@@ -267,6 +268,27 @@ class SQLiteStore:
                 """
             )
 
+    def initialize_evidence_tables(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS evidence_packs (
+                    query_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    user_question TEXT NOT NULL,
+                    query_type TEXT NOT NULL,
+                    pack_json TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    answer TEXT,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_evidence_packs_document
+                ON evidence_packs(document_id, created_at);
+                """
+            )
+
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
@@ -307,6 +329,7 @@ class SQLiteStore:
                 ),
             )
             self._delete_graph_outputs_for_document(connection, document.document_id)
+            self._delete_evidence_outputs_for_document(connection, document.document_id)
             self._delete_extraction_outputs_for_document(connection, document.document_id)
             connection.execute(
                 "DELETE FROM candidate_windows WHERE document_id = ?",
@@ -390,6 +413,7 @@ class SQLiteStore:
     ) -> None:
         with self.connect() as connection:
             self._delete_graph_outputs_for_document(connection, document_id)
+            self._delete_evidence_outputs_for_document(connection, document_id)
             self._delete_extraction_outputs_for_document(connection, document_id)
             connection.execute(
                 "DELETE FROM candidate_windows WHERE document_id = ?",
@@ -466,6 +490,17 @@ class SQLiteStore:
                 (document_id,),
             )
 
+    def _delete_evidence_outputs_for_document(
+        self,
+        connection: sqlite3.Connection,
+        document_id: str,
+    ) -> None:
+        if _table_exists(connection, "evidence_packs"):
+            connection.execute(
+                "DELETE FROM evidence_packs WHERE document_id = ?",
+                (document_id,),
+            )
+
     def list_candidate_windows(self, document_id: str) -> list[CandidateWindow]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -496,6 +531,7 @@ class SQLiteStore:
             ]
             for document_id in document_ids:
                 self._delete_graph_outputs_for_document(connection, document_id)
+                self._delete_evidence_outputs_for_document(connection, document_id)
             if _table_exists(connection, "extraction_failures"):
                 connection.execute(
                     f"DELETE FROM extraction_failures WHERE window_id IN ({placeholders})",
@@ -1013,6 +1049,43 @@ class SQLiteStore:
                 VALUES (?, ?, ?, datetime('now'))
                 """,
                 (run_id, document_id, json.dumps(report, ensure_ascii=False, indent=2)),
+            )
+
+    def insert_evidence_pack(self, pack: QueryEvidencePack, *, report: dict) -> None:
+        pack_payload = {
+            "query_id": pack.query_id,
+            "document_id": pack.document_id,
+            "user_question": pack.user_question,
+            "query_type": pack.query_type,
+            "retrieved_span_ids": pack.retrieved_span_ids,
+            "cluster_ids": pack.cluster_ids,
+            "merged_intervals": pack.merged_intervals,
+            "evidence_blocks": pack.evidence_blocks,
+            "retrieval_sources": pack.retrieval_sources,
+            "rerank_scores": pack.rerank_scores,
+            "token_estimate": pack.token_estimate,
+            "answer": pack.answer,
+            "created_at": pack.created_at.isoformat(),
+        }
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO evidence_packs (
+                    query_id, document_id, user_question, query_type,
+                    pack_json, report_json, answer, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pack.query_id,
+                    pack.document_id,
+                    pack.user_question,
+                    pack.query_type,
+                    json.dumps(pack_payload, ensure_ascii=False, indent=2),
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                    pack.answer,
+                    pack.created_at.isoformat(),
+                ),
             )
 
 

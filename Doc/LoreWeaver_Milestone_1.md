@@ -1776,6 +1776,37 @@ Span 是导航点，不一定包含足够上下文。因此要适度扩展。但
 
 Evidence Pack 可稳定生成，并且证据文本、引用编号、原文坐标全部可追溯。
 
+### 验收记录
+
+- 完成日期：2026-04-27
+- 实际完成内容：
+  - 实现 M1.7 Evidence Pack 组装链路：接收 M1.6 Rerank Top-K，按章节边界扩展 Span 坐标，合并重叠/近邻区间，按证据预算和块数上限裁剪。
+  - 生成稳定引用编号 `[E001]` 形式的 `evidence_blocks`，每个 block 保留 `chapter_title`、`start_idx`、`end_idx`、`text`、`source_span_ids`、`retrieval_sources`、`rerank_score`。
+  - 新增 `QueryEvidencePack` 落盘表 `evidence_packs`，并提供 `loreweaver evidence` CLI，从混合召回直接产出 Evidence Pack 报告。
+  - 将默认阶段号推进为 `M1.7`。
+- 关键产物路径：
+  - `loreweaver/evidence/interval.py`
+  - `loreweaver/evidence/assembler.py`
+  - `loreweaver/evidence/citation.py`
+  - `loreweaver/models/evidence.py`
+  - `loreweaver/storage/sqlite_store.py`
+  - `loreweaver/cli.py`
+  - `tests/unit/test_m1_7_evidence.py`
+  - `configs/default.yaml`
+- 执行过的验证命令：
+  - `conda run -n loreweaver python -m pytest tests/unit/test_m1_7_evidence.py`
+  - `python -m compileall loreweaver`
+  - `conda run -n loreweaver python -m pytest tests/unit`
+  - `env SILICONFLOW_API_KEY=<redacted> conda run -n loreweaver python -m loreweaver.cli evidence "塞西尔家族为什么会衰落，高文和这个家族的关系如何变化？" --no-reranker`
+- 验收结论：
+  - M1.7 独立单测通过，完整单元测试通过：`20 passed`。
+  - 真实 SiliconFlow embedding API 测试通过：Graph 36、Vector 30、BM25 30，Union 59 个候选，生成 12 个 evidence_blocks，0 个 warning，并写入 SQLite `evidence_packs`。
+  - Evidence Pack 可复现送入后续回答模型的证据块，引用编号、原文坐标和来源 Span 可追溯。
+- 遗留问题或进入下一阶段的注意事项：
+  - 当前预算裁剪为确定性启发式：优先高 Rerank 分、多源命中和章节多样性；M1.8 人工问答验收时需要观察是否过度裁剪关键上下文。
+  - `token_estimate` 仍为字符级保守估算，后续接入真实回答模型时可替换为模型 tokenizer。
+  - M1.8 需要在回答生成阶段强制只使用 `evidence_blocks`，并验证引用编号能回映射到本阶段生成的 Evidence Pack。
+
 ---
 
 ## M1.8 在线证据问答与引用输出
@@ -2426,68 +2457,7 @@ clusters:
 - 无有效证据时允许拒答；
 - 保存 Evidence Pack 便于复查。
 
-### 12.6 开发范围膨胀
-
-风险：
-
-- 一边做 CLI，一边做 UI，一边做报告，一边做全自动聚类。
-
-应对：
-
-- M1 只看闭环；
-- UI 与报告延后；
-- 每次新增功能必须能服务 M1 验收指标；
-- 所有炫技想法记入 M2/M3 backlog。
-
----
-
-## 13. M1 验收清单
-
-### 13.1 工程验收
-
-- [ ] 项目可安装；
-- [ ] CLI 可运行；
-- [ ] 配置文件可读取；
-- [ ] 样本文本已入库；
-- [ ] normalized 文本已生成；
-- [ ] 章节表坐标准确；
-- [ ] 窗口切分可复现；
-- [ ] 抽取结果结构化；
-- [ ] anchor 定位成功率达标；
-- [ ] SQLite 元数据完整；
-- [ ] Qdrant 向量索引可查；
-- [ ] BM25 索引可查；
-- [ ] 至少 2 个 CenterSpanCluster；
-- [ ] Neo4j 或 GraphStore 可查询图骨架；
-- [ ] 混合召回主链路可运行；
-- [ ] Reranker 接口可用；
-- [ ] Evidence Pack 可生成；
-- [ ] 回答带有效引用；
-- [ ] 查询记录可回放。
-
-### 13.2 质量验收
-
-- [ ] 20-30 个问题评估集完成；
-- [ ] 80% 以上回答包含有效原文引用；
-- [ ] 70% 以上问题基本可信；
-- [ ] 至少 2 个 Cluster 在问答中实际贡献证据；
-- [ ] 图、向量、BM25 至少各有一次有效贡献案例；
-- [ ] 能复盘至少 3 个失败案例；
-- [ ] 无证据问题不会被强行编造；
-- [ ] 单次响应时间处于可接受范围。
-
-### 13.3 文档验收
-
-- [ ] README 包含 M1 快速开始；
-- [ ] 配置项有说明；
-- [ ] 数据目录有说明；
-- [ ] 评估方法有说明；
-- [ ] 常见失败有说明；
-- [ ] M1 验收报告已生成。
-
----
-
-## 14. M1 结束时应该留下什么
+## 13. M1 结束时应该留下什么
 
 M1 完成后，仓库中应至少留下：
 
@@ -2512,140 +2482,7 @@ M1 完成后，仓库中应至少留下：
 - 半自动聚类探索；
 - 更细的引用与冲突标记。
 
----
-
-## 15. M1 Backlog 优先级
-
-### P0：没有它 M1 不成立
-
-- 文本入库与章节坐标；
-- 窗口切分；
-- 结构化抽取；
-- anchor 定位；
-- Span 元数据落盘；
-- BM25 检索；
-- 向量检索；
-- Evidence Pack；
-- 带引用回答；
-- 评估问题集。
-
-### P1：M1 必须尽量完成
-
-- CenterSpanCluster；
-- Neo4j 图骨架；
-- 图召回；
-- Reranker；
-- 查询分类；
-- 引用校验；
-- 评估报告。
-
-### P2：可作为增强，不能阻塞主线
-
-- MCA 风格实体覆盖门控；
-- 更复杂中文分词；
-- 更漂亮的 CLI 输出；
-- 成本统计；
-- 并发抽取；
-- 断点续跑；
-- 简单 Web API。
-
-### P3：明确延后到后续里程碑
-
-- 报告生成正式模板；
-- 全自动概念锻造；
-- 大规模长篇建库优化；
-- 多 Agent；
-- 可视化编辑界面；
-- 多书项目管理；
-- 法律/刑侦等非文娱场景泛化。
-
----
-
-## 16. 推荐执行节奏
-
-### 第 1 周：地基周
-
-目标：
-
-- 项目骨架；
-- 文本入库；
-- 章节切分；
-- 窗口切分；
-- SQLite 基础表；
-- 小文本测试。
-
-验收：
-
-- 可以对样本文本生成章节和窗口；
-- 坐标抽查无误。
-
-### 第 2 周：抽取周
-
-目标：
-
-- Pydantic Schema；
-- 抽取 Prompt；
-- LLM 抽取；
-- anchor 定位；
-- 失败队列；
-- Span 落盘。
-
-验收：
-
-- 样本全量抽取完成；
-- anchor 定位成功率达到 90% 左右；
-- 失败记录可复查。
-
-### 第 3 周：检索周
-
-目标：
-
-- BM25；
-- Qdrant；
-- 双路召回；
-- Union；
-- 初版 Evidence Pack；
-- 最小回答。
-
-验收：
-
-- 能对自然语言问题返回证据包；
-- 能生成带引用回答。
-
-### 第 4 周：图与精排周
-
-目标：
-
-- CenterSpanCluster；
-- Neo4j；
-- 图召回；
-- Reranker；
-- 引用校验；
-- 召回报告。
-
-验收：
-
-- 至少 2 个 Cluster 进入主链路；
-- 混合召回优于单路召回的案例可展示。
-
-### 第 5 周：评估与打磨周
-
-目标：
-
-- 20-30 个问题集；
-- 批量评估；
-- 人工评分；
-- 坏例复盘；
-- M1 验收报告。
-
-验收：
-
-- 达成 M1 硬指标；
-- 明确 M2 的输入资产和待修复问题。
-
----
-
-## 17. M1 最小演示脚本
+## 14. M1 最小演示脚本
 
 M1 完成时，应该能用下面脚本完成演示：
 
@@ -2685,7 +2522,7 @@ loreweaver eval report --run-id <run_id>
 
 ---
 
-## 18. M1 的核心判断
+## 15. M1 的核心判断
 
 M1 不是为了证明 LoreWeaver 已经“理解整本书”，而是为了证明以下工程命题：
 

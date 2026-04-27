@@ -8,6 +8,7 @@ from pathlib import Path
 
 from loreweaver import __version__
 from loreweaver.config import load_config
+from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
 from loreweaver.extraction.extractor import extract_document_windows, list_extraction_windows
 from loreweaver.graph.center_span import build_m15_graph, list_graph_clusters
 from loreweaver.ingest.pipeline import ingest_text
@@ -359,6 +360,42 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip reranking and keep Union fused-score ordering.",
     )
     retrieve_parser.set_defaults(func=_retrieve)
+
+    evidence_parser = subparsers.add_parser(
+        "evidence",
+        help="M1.7 evidence: assemble an Evidence Pack from hybrid retrieval Top-K spans.",
+    )
+    evidence_parser.add_argument("question", help="User question to assemble evidence for.")
+    evidence_parser.add_argument(
+        "--document-id",
+        help="Document id to retrieve from. Defaults to the latest SQLite document.",
+    )
+    evidence_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite, Qdrant, and BM25 settings.",
+    )
+    evidence_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing embedding and reranker settings.",
+    )
+    evidence_parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local mock embeddings for vector query embedding.",
+    )
+    evidence_parser.add_argument(
+        "--mock-reranker",
+        action="store_true",
+        help="Use deterministic local mock reranking instead of a live reranker API.",
+    )
+    evidence_parser.add_argument(
+        "--no-reranker",
+        action="store_true",
+        help="Skip reranking and keep Union fused-score ordering.",
+    )
+    evidence_parser.set_defaults(func=_evidence)
 
     for command in PIPELINE_COMMANDS:
         command_parser = subparsers.add_parser(
@@ -771,6 +808,45 @@ def _retrieve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _evidence(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    models_config = load_config(args.models_config)
+    retrieval_report = retrieve_m16(
+        config=config,
+        storage_config=storage_config,
+        models_config=models_config,
+        question=args.question,
+        document_id=args.document_id,
+        mock_embeddings=args.mock_embeddings,
+        mock_reranker=args.mock_reranker,
+        no_reranker=args.no_reranker,
+    )
+    report = assemble_evidence_pack_from_retrieval_report(
+        config=config,
+        storage_config=storage_config,
+        retrieval_report=retrieval_report,
+    )
+    pack = report["evidence_pack"]
+    assembly = report["assembly"]
+
+    print(f"run_id: {report['run_id']}")
+    print("command: evidence")
+    print(f"query_id: {report['query_id']}")
+    print(f"document_id: {report['document_id']}")
+    print(f"query_type: {report['query_type']}")
+    print(f"question: {report['question']}")
+    print(f"retrieval_report_path: {retrieval_report['report_path']}")
+    print(f"evidence_report_path: {report['report_path']}")
+    print(f"evidence_block_count: {assembly['evidence_block_count']}")
+    print(f"evidence_chars: {assembly['evidence_chars']}")
+    print(f"token_estimate: {pack['token_estimate']}")
+    print(f"warnings: {len(assembly['warnings'])}")
+    _print_evidence_blocks(pack["evidence_blocks"])
+    print("status: ok")
+    return 0
+
+
 def _build_extract_progress_printer() -> object:
     totals = {
         "spans": 0,
@@ -1001,6 +1077,19 @@ def _print_retrieve_results(results: list[dict]) -> None:
         entities = result.get("entities") or []
         if entities:
             print(f"   entities: {', '.join(str(entity) for entity in entities[:8])}")
+
+
+def _print_evidence_blocks(blocks: list[dict]) -> None:
+    for block in blocks:
+        preview = _truncate(block.get("text", "").replace("\n", " "), 140)
+        print(
+            f"{block['citation_id']} "
+            f"chapter={block['chapter_title']} "
+            f"range={block['start_idx']}-{block['end_idx']} "
+            f"spans={','.join(block['source_span_ids'])} "
+            f"sources={','.join(block['retrieval_sources'])}"
+        )
+        print(f"   text: {preview}")
 
 
 def _truncate(text: str, limit: int) -> str:
