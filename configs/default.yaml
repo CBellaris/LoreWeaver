@@ -1,6 +1,6 @@
 project:
   name: "LoreWeaver"
-  stage: "M1.7"
+  stage: "M1.8"
   data_dir: "data"
 
 sample:

@@ -19,12 +19,12 @@ from loreweaver.indexing.pipeline import (
     search_vector_index,
 )
 from loreweaver.logging import configure_logging, new_run_id
+from loreweaver.qa.answerer import ask_m18
 from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
 
 
 PIPELINE_COMMANDS = (
-    "ask",
     "eval",
 )
 
@@ -396,6 +396,47 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip reranking and keep Union fused-score ordering.",
     )
     evidence_parser.set_defaults(func=_evidence)
+
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="M1.8 ask: run hybrid retrieval, assemble evidence, and answer with citations.",
+    )
+    ask_parser.add_argument("question", help="User question to answer.")
+    ask_parser.add_argument(
+        "--document-id",
+        help="Document id to retrieve from. Defaults to the latest SQLite document.",
+    )
+    ask_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite, Qdrant, and BM25 settings.",
+    )
+    ask_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing embedding, reranker, and QA settings.",
+    )
+    ask_parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local mock embeddings for vector query embedding.",
+    )
+    ask_parser.add_argument(
+        "--mock-reranker",
+        action="store_true",
+        help="Use deterministic local mock reranking instead of a live reranker API.",
+    )
+    ask_parser.add_argument(
+        "--no-reranker",
+        action="store_true",
+        help="Skip reranking and keep Union fused-score ordering.",
+    )
+    ask_parser.add_argument(
+        "--mock-answer",
+        action="store_true",
+        help="Use deterministic local mock answer generation without calling a QA model.",
+    )
+    ask_parser.set_defaults(func=_ask)
 
     for command in PIPELINE_COMMANDS:
         command_parser = subparsers.add_parser(
@@ -845,6 +886,49 @@ def _evidence(args: argparse.Namespace) -> int:
     _print_evidence_blocks(pack["evidence_blocks"])
     print("status: ok")
     return 0
+
+
+def _ask(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    models_config = load_config(args.models_config)
+    report = ask_m18(
+        config=config,
+        storage_config=storage_config,
+        models_config=models_config,
+        question=args.question,
+        document_id=args.document_id,
+        mock_embeddings=args.mock_embeddings,
+        mock_reranker=args.mock_reranker,
+        no_reranker=args.no_reranker,
+        mock_answer=args.mock_answer,
+    )
+
+    validation = report["answer_validation"]
+    qa = report["qa"]
+    pack = report["evidence_pack"]
+    print(f"run_id: {report['run_id']}")
+    print("command: ask")
+    print(f"query_id: {report['query_id']}")
+    print(f"document_id: {report['document_id']}")
+    print(f"query_type: {report['query_type']}")
+    print(f"question: {report['question']}")
+    print(f"retrieval_report_path: {report['source_retrieval_report_path']}")
+    print(f"evidence_report_path: {report['source_evidence_report_path']}")
+    print(f"answer_report_path: {report['report_path']}")
+    print(
+        "answer_model: "
+        f"{qa['provider']} {qa['model']} mock={qa['mock']} "
+        f"citations_ok={validation['ok']}"
+    )
+    if validation["errors"]:
+        print(f"citation_errors: {'; '.join(validation['errors'])}")
+    print(f"evidence_block_count: {len(pack['evidence_blocks'])}")
+    _print_evidence_blocks(pack["evidence_blocks"])
+    print("answer:")
+    print(report["answer"])
+    print("status: ok" if validation["ok"] else "status: citation_validation_failed")
+    return 0 if validation["ok"] else 1
 
 
 def _build_extract_progress_printer() -> object:

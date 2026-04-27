@@ -1088,6 +1088,38 @@ class SQLiteStore:
                 ),
             )
 
+    def update_evidence_pack_answer(
+        self,
+        query_id: str,
+        *,
+        answer: str,
+        report: dict,
+        pack_payload: dict,
+    ) -> None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT pack_json FROM evidence_packs WHERE query_id = ?",
+                (query_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Evidence pack not found: {query_id}")
+            stored_pack = json.loads(row["pack_json"])
+            stored_pack.update(pack_payload)
+            stored_pack["answer"] = answer
+            connection.execute(
+                """
+                UPDATE evidence_packs
+                SET pack_json = ?, report_json = ?, answer = ?
+                WHERE query_id = ?
+                """,
+                (
+                    json.dumps(stored_pack, ensure_ascii=False, indent=2),
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                    answer,
+                    query_id,
+                ),
+            )
+
 
 def _document_from_row(row: sqlite3.Row) -> Document:
     return Document(
