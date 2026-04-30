@@ -8,6 +8,10 @@ from loreweaver.config import AppConfig
 from loreweaver.extraction.extractor import (
     MockChatClient,
     TokenPrice,
+    _apply_batch_outputs,
+    _batch_output_from_line,
+    _build_batch_request_line,
+    _results_from_raw_window_output,
     build_uncovered_text,
     estimate_cost,
     extract_document_windows,
@@ -35,6 +39,23 @@ class StaticJsonClient:
     ) -> tuple[str, dict[str, int]]:
         del messages, model, temperature
         return self.raw_output, {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}
+
+
+class SequencedJsonClient:
+    def __init__(self, raw_outputs: list[str]) -> None:
+        self.raw_outputs = list(raw_outputs)
+        self.calls = 0
+
+    def complete_json(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+    ) -> tuple[str, dict[str, int]]:
+        del messages, model, temperature
+        self.calls += 1
+        return self.raw_outputs.pop(0), {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15}
 
 
 class M13ExtractionTests(unittest.TestCase):
@@ -256,6 +277,187 @@ class M13ExtractionTests(unittest.TestCase):
         self.assertTrue(results[0].span.located_text)
         self.assertGreater(results[0].cost.estimated_yuan, 0)
         self.assertEqual(results[1].cost.estimated_yuan, 0)
+
+    def test_batch_request_line_uses_window_id_and_batch_model(self) -> None:
+        window = CandidateWindow(
+            window_id="doc_ch0001_win0001",
+            document_id="doc",
+            chapter_id="doc_ch0001",
+            window_index=1,
+            window_start=0,
+            window_end=20,
+            text="高文发现旧城堡里有异常魔力。",
+        )
+
+        line = _build_batch_request_line(
+            window=window,
+            model="deepseek-ai/DeepSeek-V3.1-Terminus",
+            temperature=0,
+            min_spans_per_window=1,
+            max_spans_per_window=3,
+            anchor_min_chars=4,
+            anchor_max_chars=80,
+            target_span_chars_min=4,
+            target_span_chars_max=80,
+            json_response_format=True,
+        )
+
+        self.assertEqual(line["custom_id"], window.window_id)
+        self.assertEqual(line["method"], "POST")
+        self.assertEqual(line["url"], "/v1/chat/completions")
+        self.assertEqual(line["body"]["model"], "deepseek-ai/DeepSeek-V3.1-Terminus")
+        self.assertEqual(line["body"]["response_format"], {"type": "json_object"})
+        self.assertTrue(line["body"]["messages"])
+
+    def test_batch_output_can_be_parsed_and_located(self) -> None:
+        text = "高文醒来后发现自己站在陌生大厅中央，墙上的魔法阵仍在微光闪烁。"
+        window = CandidateWindow(
+            window_id="doc_ch0001_win0001",
+            document_id="doc",
+            chapter_id="doc_ch0001",
+            window_index=1,
+            window_start=0,
+            window_end=len(text),
+            text=text,
+        )
+        raw_payload = {
+            "spans": [
+                {
+                    "micro_topic": "陌生大厅苏醒",
+                    "span_type": "event",
+                    "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                    "entities": ["高文", "魔法阵"],
+                    "topics": ["苏醒", "魔法"],
+                    "salience_score": 0.6,
+                    "start_anchor_quote": "高文醒来后发现自己站在陌生大厅中央",
+                    "end_anchor_quote": "墙上的魔法阵仍在微光闪烁",
+                }
+            ]
+        }
+        line = {
+            "custom_id": window.window_id,
+            "response": {
+                "status_code": 200,
+                "body": {
+                    "choices": [{"message": {"content": json.dumps(raw_payload, ensure_ascii=False)}}],
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 13,
+                        "total_tokens": 24,
+                    },
+                },
+            },
+        }
+
+        output = _batch_output_from_line(line)
+        results = _results_from_raw_window_output(
+            window,
+            raw_output=output.raw_output or "",
+            attempts=1,
+            usage=output.usage,
+            token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+            max_spans_per_window=12,
+            anchor_min_chars=4,
+            anchor_max_chars=80,
+            target_span_chars_min=4,
+            target_span_chars_max=120,
+            store_located_text=True,
+            fuzzy_threshold=0.86,
+        )
+
+        self.assertIsNone(output.error)
+        self.assertEqual(output.usage["total_tokens"], 24)
+        self.assertEqual(results[0].status, "located")
+        self.assertIn("魔法阵", results[0].span.located_text)
+
+    def test_batch_parse_failure_retries_window_live(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            text = "高文醒来后发现自己站在陌生大厅中央，墙上的魔法阵仍在微光闪烁。"
+            window = CandidateWindow(
+                window_id="doc_ch0001_win0001",
+                document_id="doc",
+                chapter_id="doc_ch0001",
+                window_index=1,
+                window_start=0,
+                window_end=len(text),
+                text=text,
+            )
+            bad_payload = {
+                "spans": [
+                    {
+                        "micro_topic": "陌生大厅苏醒",
+                        "span_type": "event",
+                        "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                        "entities": ["高文", "魔法阵"],
+                        "topics": ["苏醒", "魔法"],
+                        "salience_score": 0.6,
+                        "start_anchor_quote": "高文醒来后发现自己站在陌生大厅中央",
+                        "end_quote": "墙上的魔法阵仍在微光闪烁",
+                    }
+                ]
+            }
+            retry_payload = {
+                "spans": [
+                    {
+                        "micro_topic": "陌生大厅苏醒",
+                        "span_type": "event",
+                        "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                        "entities": ["高文", "魔法阵"],
+                        "topics": ["苏醒", "魔法"],
+                        "salience_score": 0.6,
+                        "start_anchor_quote": "高文醒来后发现自己站在陌生大厅中央",
+                        "end_anchor_quote": "墙上的魔法阵仍在微光闪烁",
+                    }
+                ]
+            }
+            output = _batch_output_from_line(
+                {
+                    "custom_id": window.window_id,
+                    "response": {
+                        "status_code": 200,
+                        "body": {
+                            "choices": [
+                                {"message": {"content": json.dumps(bad_payload, ensure_ascii=False)}}
+                            ],
+                            "usage": {
+                                "prompt_tokens": 11,
+                                "completion_tokens": 13,
+                                "total_tokens": 24,
+                            },
+                        },
+                    },
+                }
+            )
+            client = SequencedJsonClient([json.dumps(retry_payload, ensure_ascii=False)])
+            store = SQLiteStore(Path(tmpdir) / "test.sqlite3")
+            store.initialize()
+            store.initialize_extraction_tables()
+
+            results = _apply_batch_outputs(
+                store=store,
+                windows=[window],
+                outputs=[output],
+                client=client,
+                model="mock",
+                temperature=0,
+                retry_policy=RetryPolicy(max_retries=0),
+                min_spans_per_window=1,
+                max_spans_per_window=12,
+                anchor_min_chars=4,
+                anchor_max_chars=80,
+                target_span_chars_min=4,
+                target_span_chars_max=120,
+                store_located_text=True,
+                store_uncovered_text=True,
+                fuzzy_threshold=0.86,
+                token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+                progress_callback=None,
+            )
+
+            self.assertEqual(client.calls, 1)
+            self.assertEqual(results[0].status, "located")
+            self.assertIn("魔法阵", results[0].span.located_text)
+            self.assertEqual(results[0].usage["total_tokens"], 39)
 
     def test_extraction_pipeline_persists_spans_failures_and_report(self) -> None:
         with TemporaryDirectory() as tmpdir:

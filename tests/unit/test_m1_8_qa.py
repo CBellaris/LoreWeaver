@@ -9,6 +9,7 @@ from loreweaver.models.chapter import Chapter
 from loreweaver.models.document import Document
 from loreweaver.qa.answerer import (
     AnswerClient,
+    _qa_settings,
     answer_evidence_pack,
     validate_answer_citations,
 )
@@ -80,6 +81,35 @@ class M18QATests(unittest.TestCase):
             self.assertTrue(report["answer_validation"]["ok"])
             self.assertTrue(report["answer_validation"]["repaired"])
             self.assertEqual(report["answer_validation"]["citations"], ["[E001]"])
+
+    def test_qa_settings_use_model_config_when_default_has_no_model(self) -> None:
+        config = AppConfig(
+            path=Path("default.yaml"),
+            values={"qa": {"temperature": 0, "require_citations": True}},
+        )
+        models_config = AppConfig(
+            path=Path("models.yaml"),
+            values={
+                "providers": {
+                    "siliconflow": {
+                        "api_key_env": "SILICONFLOW_API_KEY",
+                        "base_url": "https://api.siliconflow.cn/v1",
+                    }
+                },
+                "models": {
+                    "qa": {
+                        "provider": "siliconflow",
+                        "name": "deepseek-ai/DeepSeek-V3.2",
+                    }
+                },
+            },
+        )
+
+        settings = _qa_settings(config=config, models_config=models_config)
+
+        self.assertEqual(settings["provider"], "siliconflow")
+        self.assertEqual(settings["model"], "deepseek-ai/DeepSeek-V3.2")
+        self.assertEqual(settings["api_key_env"], "SILICONFLOW_API_KEY")
 
 
 def _setup_store(

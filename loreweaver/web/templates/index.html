@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LoreWeaver Debug</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">LW</div>
+          <div>
+            <h1>LoreWeaver</h1>
+            <p>Debug Console</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Debug views">
+          <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="runner">Runner</button>
+          <button class="nav-item" data-view="retrieval">Retrieval</button>
+          <button class="nav-item" data-view="neo4j">Neo4j</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <section id="view-overview" class="view active">
+          <header class="view-header">
+            <div>
+              <h2>Overview</h2>
+              <p id="stage-line"></p>
+            </div>
+            <button id="refresh-overview" class="button">Refresh</button>
+          </header>
+          <div id="overview-content" class="stack"></div>
+        </section>
+
+        <section id="view-runner" class="view">
+          <header class="view-header">
+            <div>
+              <h2>Runner</h2>
+              <p>CLI-compatible local task runner</p>
+            </div>
+          </header>
+          <div class="runner-grid">
+            <section class="panel">
+              <div class="panel-title">
+                <h3>Command</h3>
+                <button id="run-command" class="button primary">Run</button>
+              </div>
+              <label class="field">
+                <span>Command</span>
+                <select id="command-select"></select>
+              </label>
+              <div id="command-fields" class="form-grid"></div>
+              <div class="api-inject">
+                <div class="panel-title compact">
+                  <h3>One-run API Key</h3>
+                </div>
+                <div class="form-grid">
+                  <label class="field">
+                    <span>Env Var</span>
+                    <select id="runner-api-env">
+                      <option value="">disabled</option>
+                      <option value="SILICONFLOW_API_KEY">SILICONFLOW_API_KEY</option>
+                      <option value="OPENAI_API_KEY">OPENAI_API_KEY</option>
+                    </select>
+                  </label>
+                  <label class="field wide">
+                    <span>API Key</span>
+                    <input id="runner-api-key" type="password" autocomplete="off" placeholder="used only for this job">
+                  </label>
+                </div>
+              </div>
+              <pre id="cli-preview" class="code-box"></pre>
+            </section>
+            <section class="panel">
+              <div class="panel-title">
+                <h3>Live Run</h3>
+                <button id="cancel-job" class="button danger" disabled>Cancel</button>
+              </div>
+              <div id="job-status" class="status-line">idle</div>
+              <div id="event-log" class="event-log"></div>
+            </section>
+          </div>
+          <section class="panel result-panel">
+            <div class="panel-title">
+              <h3>Result</h3>
+            </div>
+            <div id="job-result"></div>
+          </section>
+        </section>
+
+        <section id="view-retrieval" class="view">
+          <header class="view-header">
+            <div>
+              <h2>Retrieval</h2>
+              <p>Graph / Vector / BM25 / Union / Rerank</p>
+            </div>
+            <button id="run-retrieve" class="button primary">Retrieve</button>
+          </header>
+          <section class="panel">
+            <div class="form-grid retrieval-form">
+              <label class="field wide">
+                <span>Question</span>
+                <input id="retrieve-question" value="塞西尔家族为什么衰落？">
+              </label>
+              <label class="field">
+                <span>Document ID</span>
+                <input id="retrieve-document-id" placeholder="latest">
+              </label>
+              <label class="check-field">
+                <input id="retrieve-mock-embeddings" type="checkbox">
+                <span>mock embeddings</span>
+              </label>
+              <label class="check-field">
+                <input id="retrieve-mock-reranker" type="checkbox">
+                <span>mock reranker</span>
+              </label>
+              <label class="check-field">
+                <input id="retrieve-no-reranker" type="checkbox">
+                <span>no reranker</span>
+              </label>
+              <label class="field">
+                <span>API Env</span>
+                <select id="retrieve-api-env">
+                  <option value="">disabled</option>
+                  <option value="SILICONFLOW_API_KEY">SILICONFLOW_API_KEY</option>
+                  <option value="OPENAI_API_KEY">OPENAI_API_KEY</option>
+                </select>
+              </label>
+              <label class="field wide">
+                <span>API Key</span>
+                <input id="retrieve-api-key" type="password" autocomplete="off" placeholder="used only for this retrieval">
+              </label>
+            </div>
+          </section>
+          <section class="panel result-panel">
+            <div id="retrieval-result"></div>
+          </section>
+        </section>
+
+        <section id="view-neo4j" class="view">
+          <header class="view-header">
+            <div>
+              <h2>Neo4j</h2>
+              <p>Local graph service</p>
+            </div>
+            <div class="actions">
+              <button id="neo4j-refresh" class="button">Refresh</button>
+              <button id="neo4j-start" class="button primary">Start</button>
+              <a id="neo4j-open" class="button link-button" href="http://localhost:7474" target="_blank" rel="noreferrer">Open</a>
+            </div>
+          </header>
+          <section class="panel">
+            <div id="neo4j-status"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

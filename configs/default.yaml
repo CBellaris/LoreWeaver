@@ -26,7 +26,8 @@ window:
   max_chars: 1600
 
 extraction:
-  model: "Pro/deepseek-ai/DeepSeek-V3.2"
+  model: "deepseek-ai/DeepSeek-V3.2"
+  batch_model: "deepseek-ai/DeepSeek-V3.1-Terminus"
   temperature: 0
   max_retries: 2
   min_spans_per_window: 2
@@ -40,6 +41,8 @@ extraction:
   store_uncovered_text: true
   input_yuan_per_1k: 0.002
   output_yuan_per_1k: 0.003
+  batch_input_yuan_per_1k: 0.002
+  batch_output_yuan_per_1k: 0.006
 
 locator:
   fuzzy_threshold: 0.86
@@ -81,6 +84,5 @@ evidence:
   max_blocks: 12
 
 qa:
-  model: "gpt-4o"
   temperature: 0
   require_citations: true

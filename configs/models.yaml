@@ -9,9 +9,12 @@ models:
   extraction:
     provider: "siliconflow"
     name: "Pro/deepseek-ai/DeepSeek-V3.2"
+    batch_name: "deepseek-ai/DeepSeek-V3.1-Terminus"
     temperature: 0
     input_yuan_per_1k: 0.002
     output_yuan_per_1k: 0.003
+    batch_input_yuan_per_1k: 0.002
+    batch_output_yuan_per_1k: 0.006
     json_response_format: false
   qa:
     provider: "siliconflow"

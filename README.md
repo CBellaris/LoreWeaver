@@ -68,6 +68,14 @@ python3 -m pip install -e ".[m1]"
 python3 -m loreweaver.cli extract --limit 10
 ```
 
+For larger extraction runs through SiliconFlow batch mode:
+
+```bash
+python3 -m loreweaver.cli extract --batch --limit 1000
+python3 -m loreweaver.cli extract --batch-id <batch_id>
+python3 -m loreweaver.cli extract --batch --batch-wait --batch-poll-interval 60
+```
+
 For local plumbing checks without API calls:
 
 ```bash

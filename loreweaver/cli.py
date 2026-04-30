@@ -47,6 +47,24 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Show project bootstrap status.")
     status_parser.set_defaults(func=_status)
 
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Run the local debugging Web UI.",
+    )
+    web_parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
+    web_parser.add_argument("--port", type=int, default=7860, help="Port to bind.")
+    web_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing the SQLite path.",
+    )
+    web_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config.",
+    )
+    web_parser.set_defaults(func=_web)
+
     ingest_parser = subparsers.add_parser(
         "ingest",
         help="M1.1 ingest: normalize raw text, split chapters, and write SQLite metadata.",
@@ -163,6 +181,45 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mock",
         action="store_true",
         help="Use deterministic local mock extraction without calling an LLM API.",
+    )
+    extract_parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Submit selected windows as a SiliconFlow/OpenAI-compatible batch job.",
+    )
+    extract_parser.add_argument(
+        "--batch-id",
+        help="Retrieve and apply an existing batch job. The batch must contain window_id custom_ids.",
+    )
+    extract_parser.add_argument(
+        "--batch-model",
+        default=None,
+        help=(
+            "Model used for batch extraction. Defaults to deepseek-ai/DeepSeek-V3.1-Terminus "
+            "unless configured."
+        ),
+    )
+    extract_parser.add_argument(
+        "--batch-wait",
+        action="store_true",
+        help="Poll after batch submission/retrieval until the batch reaches a terminal status.",
+    )
+    extract_parser.add_argument(
+        "--batch-poll-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between batch status polls when --batch-wait is set.",
+    )
+    extract_parser.add_argument(
+        "--batch-timeout",
+        type=float,
+        default=None,
+        help="Maximum seconds to wait for a batch before returning the current status.",
+    )
+    extract_parser.add_argument(
+        "--batch-completion-window",
+        default="24h",
+        help="Batch completion window passed to the provider.",
     )
     extract_parser.add_argument(
         "--no-progress",
@@ -489,6 +546,27 @@ def _status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _web(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError as error:
+        raise RuntimeError(
+            "The Web UI requires optional web dependencies. "
+            "Install them with: python -m pip install -e '.[web]'"
+        ) from error
+
+    from loreweaver.web.app import create_app
+
+    app = create_app(
+        config_path=args.config,
+        storage_config_path=args.storage_config,
+        models_config_path=args.models_config,
+    )
+    print(f"web_url: http://{args.host}:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port)
+    return 0
+
+
 def _ingest(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
@@ -616,6 +694,13 @@ def _extract(args: argparse.Namespace) -> int:
         window_ids=args.window_id,
         window_ranges=args.window_range,
         mock=args.mock,
+        batch=args.batch,
+        batch_id=args.batch_id,
+        batch_model=args.batch_model,
+        batch_wait=args.batch_wait,
+        batch_poll_interval_seconds=args.batch_poll_interval,
+        batch_timeout_seconds=args.batch_timeout,
+        batch_completion_window=args.batch_completion_window,
         progress_callback=progress,
     )
 
@@ -624,6 +709,16 @@ def _extract(args: argparse.Namespace) -> int:
     print(f"document_id: {report['document']['document_id']}")
     print(f"model: {report['model']}")
     print(f"mock: {report['mock']}")
+    if report.get("mode") == "batch":
+        print("mode: batch")
+        print(f"batch_id: {report['batch_id']}")
+        print(f"batch_status: {report['batch_status']}")
+        if report.get("input_file_id"):
+            print(f"input_file_id: {report['input_file_id']}")
+        if report.get("output_file_id"):
+            print(f"output_file_id: {report['output_file_id']}")
+        if report.get("error_file_id"):
+            print(f"error_file_id: {report['error_file_id']}")
     print(f"sqlite_path: {report['sqlite_path']}")
     print(f"report_path: {report['report_path']}")
     print(f"window_count: {report['window_count']}")
@@ -982,6 +1077,57 @@ def _build_extract_progress_printer() -> object:
                 f"attempt={payload['attempt']} "
                 f"elapsed={payload['elapsed_seconds']}s"
                 f"{usage}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "batch_upload_start":
+            print(
+                "[extract] "
+                f"batch upload model={payload['model']} "
+                f"windows={payload['window_count']} "
+                f"input={payload['input_path']}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "batch_submitted":
+            print(
+                "[extract] "
+                f"batch submitted id={payload['batch_id']} "
+                f"status={payload['status']} "
+                f"input_file={payload['input_file_id']} "
+                f"windows={payload['window_count']}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "batch_status":
+            counts = payload.get("request_counts") or {}
+            counts_text = ""
+            if counts:
+                counts_text = " " + " ".join(f"{key}={value}" for key, value in counts.items())
+            print(
+                "[extract] "
+                f"batch status id={payload['batch_id']} "
+                f"status={payload['status']}"
+                f"{counts_text}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "batch_downloaded":
+            print(
+                "[extract] "
+                f"batch downloaded id={payload['batch_id']} "
+                f"output={payload['output_path']} "
+                f"errors={payload['error_path']}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "batch_window_retry":
+            reason = str(payload.get("reason", "")).splitlines()[0]
+            print(
+                "[extract] "
+                f"batch window retry {payload['window_index']}/{payload['total_windows']} "
+                f"{payload['window_id']} "
+                f"reason={reason}",
                 file=sys.stderr,
                 flush=True,
             )
