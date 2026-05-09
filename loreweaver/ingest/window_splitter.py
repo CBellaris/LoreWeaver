@@ -10,6 +10,7 @@ from typing import Any
 from loreweaver.config import AppConfig
 from loreweaver.models.chapter import Chapter
 from loreweaver.models.window import CandidateWindow
+from loreweaver.progress import ProgressReporter
 from loreweaver.storage.sqlite_store import SQLiteStore
 
 
@@ -44,8 +45,11 @@ def build_candidate_windows(
     min_window_chars: int | None = None,
     max_window_chars: int | None = None,
     split_by_chapter: bool = False,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Load chapters from SQLite, split normalized text, and persist windows."""
+    if progress is not None:
+        progress.emit("stage_start", stage="windows.load", label="Load document and chapters", current=0, total=3, unit="steps")
     store = SQLiteStore(storage_config.sqlite_path)
     store.initialize()
 
@@ -62,6 +66,16 @@ def build_candidate_windows(
             f"{len(normalized_text)} != {document.total_chars}"
         )
 
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="windows.split",
+            label="Build candidate windows",
+            current=1,
+            total=3,
+            unit="steps",
+            detail={"chapter_count": len(chapters)},
+        )
     window_config = config.values.get("window", {})
     size = (
         window_size_chars
@@ -94,6 +108,16 @@ def build_candidate_windows(
         max_window_chars=max_chars,
         split_by_chapter=split_by_chapter,
     )
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="windows.sqlite",
+            label="Persist candidate windows",
+            current=2,
+            total=3,
+            unit="steps",
+            detail={"window_count": len(windows)},
+        )
     store.upsert_candidate_windows(document.document_id, windows)
 
     report = {
@@ -126,6 +150,21 @@ def build_candidate_windows(
     report["report_path"] = str(report_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.insert_window_report(run_id, document.document_id, report)
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="windows.completed",
+            label="Window split completed",
+            current=3,
+            total=3,
+            unit="steps",
+            status="completed",
+            detail={
+                "document_id": document.document_id,
+                "window_count": len(windows),
+                "report_path": str(report_path),
+            },
+        )
     return report
 
 

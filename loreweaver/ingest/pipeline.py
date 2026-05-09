@@ -14,6 +14,7 @@ from loreweaver.ingest.chapter_splitter import split_chapters
 from loreweaver.ingest.normalizer import normalize_text
 from loreweaver.ingest.reader import read_text_file
 from loreweaver.models.document import Document
+from loreweaver.progress import ProgressReporter
 from loreweaver.storage.sqlite_store import SQLiteStore
 
 
@@ -26,9 +27,14 @@ def ingest_text(
     title: str | None = None,
     author: str | None = None,
     max_chapters: int | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if progress is not None:
+        progress.emit("stage_start", stage="ingest.read", label="Read source text", current=0, total=4, unit="steps")
     raw_text, encoding = read_text_file(source_path)
     ingest_config = config.values.get("ingest", {})
+    if progress is not None:
+        progress.emit("stage_start", stage="ingest.normalize", label="Normalize source text", current=1, total=4, unit="steps")
     normalized_text, normalization_report = normalize_text(
         raw_text,
         normalize_newlines=bool(ingest_config.get("normalize_newlines", True)),
@@ -43,6 +49,8 @@ def ingest_text(
     with normalized_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(normalized_text)
 
+    if progress is not None:
+        progress.emit("stage_start", stage="ingest.chapters", label="Split chapters", current=2, total=4, unit="steps")
     chapters, split_report = split_chapters(
         normalized_text,
         document_id=document_id,
@@ -66,6 +74,8 @@ def ingest_text(
 
     store = SQLiteStore(storage_config.sqlite_path)
     store.initialize()
+    if progress is not None:
+        progress.emit("stage_start", stage="ingest.sqlite", label="Persist document metadata", current=3, total=4, unit="steps")
     store.upsert_document_with_chapters(document, chapters)
 
     report = {
@@ -102,4 +112,15 @@ def ingest_text(
     report["report_path"] = str(report_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.insert_ingest_report(run_id, document.document_id, report)
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="ingest.completed",
+            label="Ingest completed",
+            current=4,
+            total=4,
+            unit="steps",
+            status="completed",
+            detail={"document_id": document.document_id, "report_path": str(report_path)},
+        )
     return report

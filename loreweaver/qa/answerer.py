@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from loreweaver.config import AppConfig
 from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
 from loreweaver.logging import new_run_id
+from loreweaver.progress import ProgressReporter
 from loreweaver.qa.prompts import build_answer_messages, build_repair_messages
 from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
@@ -139,8 +140,20 @@ def ask_m18(
     mock_reranker: bool = False,
     no_reranker: bool = False,
     mock_answer: bool = False,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Run M1.8 end-to-end online QA: retrieve, assemble evidence, answer, persist."""
+    if progress is not None:
+        progress = progress.child(command="ask")
+        progress.emit(
+            "planned",
+            stage="ask.plan",
+            label="Plan answer workflow",
+            current=0,
+            total=3,
+            unit="phases",
+            detail={"question": question, "document_id": document_id},
+        )
     retrieval_report = retrieve_m16(
         config=config,
         storage_config=storage_config,
@@ -150,11 +163,13 @@ def ask_m18(
         mock_embeddings=mock_embeddings,
         mock_reranker=mock_reranker,
         no_reranker=no_reranker,
+        progress=progress.child(command="retrieve") if progress is not None else None,
     )
     evidence_report = assemble_evidence_pack_from_retrieval_report(
         config=config,
         storage_config=storage_config,
         retrieval_report=retrieval_report,
+        progress=progress.child(command="evidence") if progress is not None else None,
     )
     return answer_evidence_pack(
         config=config,
@@ -163,6 +178,7 @@ def ask_m18(
         evidence_report=evidence_report,
         mock_answer=mock_answer,
         retrieval_report=retrieval_report,
+        progress=progress,
     )
 
 
@@ -175,6 +191,7 @@ def answer_evidence_pack(
     mock_answer: bool = False,
     retrieval_report: dict[str, Any] | None = None,
     answer_client: AnswerClient | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Generate and persist an answer from an already assembled Evidence Pack."""
     store = SQLiteStore(storage_config.sqlite_path)
@@ -210,6 +227,21 @@ def answer_evidence_pack(
         cluster_summaries=cluster_summaries,
         evidence_blocks=evidence_blocks,
     )
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="ask.answer",
+            label="Generate cited answer",
+            current=2,
+            total=3,
+            unit="phases",
+            detail={
+                "provider": client.provider,
+                "model": client.model,
+                "evidence_block_count": len(evidence_blocks),
+                "mock": mock_answer,
+            },
+        )
     answer, usage = client.complete(messages=messages, temperature=qa_settings["temperature"])
     validation = validate_answer_citations(
         answer,
@@ -219,6 +251,16 @@ def answer_evidence_pack(
     repaired = False
     repair_usage: dict[str, int] = {}
     if not validation.ok and evidence_blocks:
+        if progress is not None:
+            progress.emit(
+                "stage_start",
+                stage="ask.repair",
+                label="Repair answer citations",
+                current=2,
+                total=3,
+                unit="phases",
+                detail={"errors": validation.errors},
+            )
         repair_messages = build_repair_messages(
             question=question,
             answer=answer,
@@ -281,6 +323,21 @@ def answer_evidence_pack(
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.update_evidence_pack_answer(query_id, answer=answer, report=report, pack_payload=pack)
     store.insert_query_run(query_id, document_id, question, report)
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="ask.completed",
+            label="Answer workflow completed",
+            current=3,
+            total=3,
+            unit="phases",
+            status="completed",
+            detail={
+                "report_path": str(report_path),
+                "citations_ok": validation.ok,
+                "repaired": repaired,
+            },
+        )
     return report
 
 

@@ -451,7 +451,7 @@ class M13ExtractionTests(unittest.TestCase):
                 store_uncovered_text=True,
                 fuzzy_threshold=0.86,
                 token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
-                progress_callback=None,
+                progress=None,
             )
 
             self.assertEqual(client.calls, 1)

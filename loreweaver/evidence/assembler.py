@@ -19,6 +19,7 @@ from loreweaver.evidence.interval import (
 )
 from loreweaver.logging import new_run_id
 from loreweaver.models.evidence import EvidenceBlock, QueryEvidencePack
+from loreweaver.progress import ProgressReporter
 from loreweaver.storage.sqlite_store import SQLiteStore
 
 
@@ -27,7 +28,10 @@ def assemble_evidence_pack_from_retrieval_report(
     config: AppConfig,
     storage_config: AppConfig,
     retrieval_report: dict[str, Any],
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    if progress is not None:
+        progress = progress.child(command="evidence")
     store = SQLiteStore(storage_config.sqlite_path)
     store.initialize()
     store.initialize_extraction_tables()
@@ -37,8 +41,23 @@ def assemble_evidence_pack_from_retrieval_report(
 
     document_id = str(retrieval_report["document_id"])
     document = store.get_document(document_id)
+    if progress is not None:
+        progress.emit(
+            "planned",
+            stage="evidence.plan",
+            label="Plan evidence assembly",
+            current=0,
+            total=6,
+            unit="steps",
+            detail={
+                "document_id": document.document_id,
+                "top_result_count": len(retrieval_report.get("top_results", [])),
+            },
+        )
     chapters = store.list_chapters(document.document_id)
     chapters_by_id = {chapter.chapter_id: chapter for chapter in chapters}
+    if progress is not None:
+        progress.emit("stage_start", stage="evidence.load_text", label="Load normalized text", current=1, total=6, unit="steps")
     normalized_text = Path(document.normalized_path).read_text(encoding="utf-8")
     evidence_config = config.values.get("evidence", {})
 
@@ -46,17 +65,49 @@ def assemble_evidence_pack_from_retrieval_report(
         {"document_id": document.document_id, **dict(item)}
         for item in retrieval_report.get("top_results", [])
     ]
+    if progress is not None:
+        progress.emit("stage_start", stage="evidence.seeds", label="Build evidence seeds", current=2, total=6, unit="steps")
     seeds, seed_warnings = build_span_evidence_seeds(top_results)
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="evidence.expand",
+            label="Expand evidence intervals",
+            current=3,
+            total=6,
+            unit="steps",
+            detail={"seed_count": len(seeds)},
+        )
     expanded, expand_warnings = expand_seeds_to_intervals(
         seeds,
         chapters_by_id=chapters_by_id,
         pre_context_chars=int(evidence_config.get("pre_context_chars", 300)),
         post_context_chars=int(evidence_config.get("post_context_chars", 500)),
     )
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="evidence.merge",
+            label="Merge evidence intervals",
+            current=4,
+            total=6,
+            unit="steps",
+            detail={"expanded_count": len(expanded)},
+        )
     merged = merge_evidence_intervals(
         expanded,
         merge_gap_chars=int(evidence_config.get("merge_gap_chars", 500)),
     )
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="evidence.select",
+            label="Select evidence for budget",
+            current=5,
+            total=6,
+            unit="steps",
+            detail={"merged_count": len(merged)},
+        )
     selected = select_intervals_for_budget(
         merged,
         max_evidence_chars=int(evidence_config.get("max_evidence_chars", 40000)),
@@ -125,6 +176,21 @@ def assemble_evidence_pack_from_retrieval_report(
     report["report_path"] = str(report_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.insert_evidence_pack(pack, report=report)
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="evidence.completed",
+            label="Evidence assembly completed",
+            current=6,
+            total=6,
+            unit="steps",
+            status="completed",
+            detail={
+                "report_path": str(report_path),
+                "evidence_block_count": len(evidence_blocks),
+                "evidence_chars": sum(len(block.text) for block in evidence_blocks),
+            },
+        )
     return report
 
 

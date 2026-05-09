@@ -15,6 +15,7 @@ from loreweaver.config import AppConfig
 from loreweaver.graph.edge_builder import build_graph_edges
 from loreweaver.models.cluster import CenterSpanCluster, SpanEdge
 from loreweaver.models.span import Span
+from loreweaver.progress import ProgressReporter
 from loreweaver.storage.bm25_store import tokenize_for_bm25
 from loreweaver.storage.neo4j_store import Neo4jGraphStore
 from loreweaver.storage.qdrant_store import QdrantVectorStore
@@ -79,12 +80,26 @@ def build_m15_graph(
     min_members: int | None = None,
     use_embeddings: bool | None = None,
     sync_neo4j: bool | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Build the lightweight M1.5 center-span graph and write a debug report."""
+    if progress is not None:
+        progress = progress.child(command="graph", run_id=run_id)
     store = SQLiteStore(storage_config.sqlite_path)
     store.initialize()
     store.initialize_graph_tables()
     document = store.get_document(document_id)
+    if progress is not None:
+        progress.emit(
+            "planned",
+            stage="graph.plan",
+            label="Plan graph build",
+            current=0,
+            total=6,
+            unit="steps",
+            detail={"document_id": document.document_id},
+        )
+        progress.emit("stage_start", stage="graph.load_spans", label="Load located spans", current=1, total=6, unit="steps")
     spans = store.list_spans(document.document_id, located_only=True)
     if not spans:
         raise ValueError(
@@ -115,6 +130,16 @@ def build_m15_graph(
                 salience=weights.salience,
             )
         )
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="graph.load_vectors",
+            label="Load span vectors",
+            current=2,
+            total=6,
+            unit="steps",
+            detail={"span_count": len(spans), "enabled": effective_use_embeddings},
+        )
     span_vectors, vector_load = _load_span_vectors(
         storage_config=storage_config,
         document_id=document.document_id,
@@ -127,6 +152,19 @@ def build_m15_graph(
         else sync_neo4j
     )
 
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="graph.clusters",
+            label="Build center-span clusters",
+            current=3,
+            total=6,
+            unit="steps",
+            detail={
+                "cluster_count": effective_cluster_count,
+                "members_per_cluster": effective_members_per_cluster,
+            },
+        )
     clusters, member_candidates_by_cluster = build_center_span_clusters(
         document_id=document.document_id,
         spans=spans,
@@ -143,6 +181,16 @@ def build_m15_graph(
         )
 
     chapters = store.list_chapters(document.document_id)
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="graph.edges",
+            label="Build graph edges",
+            current=4,
+            total=6,
+            unit="steps",
+            detail={"cluster_count": len(clusters)},
+        )
     edges = build_graph_edges(
         document_id=document.document_id,
         clusters=clusters,
@@ -150,10 +198,29 @@ def build_m15_graph(
         spans=spans,
         chapters=chapters,
     )
+    if progress is not None:
+        progress.emit(
+            "stage_start",
+            stage="graph.sqlite",
+            label="Persist graph to SQLite",
+            current=5,
+            total=6,
+            unit="steps",
+            detail={"cluster_count": len(clusters), "edge_count": len(edges)},
+        )
     store.replace_graph(document_id=document.document_id, clusters=clusters, edges=edges)
 
     neo4j_report = {"enabled": effective_sync_neo4j, "synced": False, "message": "disabled"}
     if effective_sync_neo4j:
+        if progress is not None:
+            progress.emit(
+                "stage_start",
+                stage="graph.neo4j",
+                label="Sync graph to Neo4j",
+                current=5,
+                total=6,
+                unit="steps",
+            )
         neo4j_store = Neo4jGraphStore.from_config(storage_config)
         try:
             neo4j_report = neo4j_store.replace_graph(
@@ -182,6 +249,22 @@ def build_m15_graph(
     report["report_path"] = str(report_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.insert_graph_report(run_id, document.document_id, report)
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="graph.completed",
+            label="Graph build completed",
+            current=6,
+            total=6,
+            unit="steps",
+            status="completed",
+            detail={
+                "report_path": str(report_path),
+                "cluster_count": len(clusters),
+                "edge_count": len(edges),
+                "neo4j": neo4j_report,
+            },
+        )
     return report
 
 

@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 try:
     from pydantic import ValidationError
@@ -28,6 +28,7 @@ from loreweaver.extraction.retry import RetryPolicy
 from loreweaver.extraction.schemas import SpanCandidatePayload, WindowExtractionPayload
 from loreweaver.models.span import Span
 from loreweaver.models.window import CandidateWindow
+from loreweaver.progress import ProgressReporter
 from loreweaver.storage.sqlite_store import SQLiteStore
 
 
@@ -71,9 +72,6 @@ class BatchOutput:
     raw_output: str | None
     usage: dict[str, int]
     error: str | None
-
-
-ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -286,7 +284,7 @@ def extract_document_windows(
     batch_poll_interval_seconds: float = 30.0,
     batch_timeout_seconds: float | None = None,
     batch_completion_window: str = "24h",
-    progress_callback: ProgressCallback | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Run M1.3 extraction over persisted candidate windows and write reports."""
     store = SQLiteStore(storage_config.sqlite_path)
@@ -379,16 +377,21 @@ def extract_document_windows(
             batch_poll_interval_seconds=batch_poll_interval_seconds,
             batch_timeout_seconds=batch_timeout_seconds,
             batch_completion_window=batch_completion_window,
-            progress_callback=progress_callback,
+            progress=progress,
         )
         return batch_report
 
     store.delete_spans_for_windows(window.window_id for window in windows)
 
-    if progress_callback is not None:
-        progress_callback(
+    if progress is not None:
+        progress.emit(
             "planned",
-            {
+            stage="extract.plan",
+            label=f"Plan extraction for {len(windows)} windows",
+            current=0,
+            total=len(windows),
+            unit="windows",
+            detail={
                 "document_id": document.document_id,
                 "model": model_name,
                 "mock": mock,
@@ -402,10 +405,15 @@ def extract_document_windows(
     results: list[ExtractionResult] = []
     for window_index, window in enumerate(windows, start=1):
         window_started_at = time.perf_counter()
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "window_start",
-                {
+                stage="extract.window",
+                label=f"Extract {window.window_id}",
+                current=window_index - 1,
+                total=len(windows),
+                unit="windows",
+                detail={
                     "window_index": window_index,
                     "total_windows": len(windows),
                     "window_id": window.window_id,
@@ -428,7 +436,7 @@ def extract_document_windows(
             store_located_text=store_located_text,
             fuzzy_threshold=fuzzy_threshold,
             token_price=price,
-            progress_callback=progress_callback,
+            progress=progress,
             progress_payload={
                 "window_index": window_index,
                 "total_windows": len(windows),
@@ -462,20 +470,30 @@ def extract_document_windows(
                     raw_output=result.raw_output,
                 )
             results.append(result)
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "db_write_done",
-                {
+                stage="extract.db",
+                label=f"Persist {window.window_id}",
+                current=window_index,
+                total=len(windows),
+                unit="windows",
+                detail={
                     "window_index": window_index,
                     "total_windows": len(windows),
                     "window_id": window.window_id,
                     "elapsed_seconds": round(time.perf_counter() - db_started_at, 2),
                 },
             )
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "window_done",
-                {
+                stage="extract.window",
+                label=f"Completed {window.window_id}",
+                current=window_index,
+                total=len(windows),
+                unit="windows",
+                detail={
                     "window_index": window_index,
                     "total_windows": len(windows),
                     "window_id": window.window_id,
@@ -503,10 +521,16 @@ def extract_document_windows(
     report["report_path"] = str(report_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.insert_extraction_report(run_id, document.document_id, report)
-    if progress_callback is not None:
-        progress_callback(
+    if progress is not None:
+        progress.emit(
             "completed",
-            {
+            stage="extract.completed",
+            label="Extraction completed",
+            current=len(windows),
+            total=len(windows),
+            unit="windows",
+            status="completed",
+            detail={
                 "report_path": str(report_path),
                 "span_count": report["span_count"],
                 "located_count": report["locator_success_count"],
@@ -575,7 +599,7 @@ def _run_batch_extraction(
     batch_poll_interval_seconds: float,
     batch_timeout_seconds: float | None,
     batch_completion_window: str,
-    progress_callback: ProgressCallback | None,
+    progress: ProgressReporter | None,
 ) -> dict[str, Any]:
     runs_dir = config.data_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -603,10 +627,15 @@ def _run_batch_extraction(
             target_span_chars_max=target_span_chars_max,
             json_response_format=client._json_response_format,
         )
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "batch_upload_start",
-                {
+                stage="extract.batch.upload",
+                label="Upload batch input",
+                current=0,
+                total=len(windows),
+                unit="windows",
+                detail={
                     "input_path": str(input_path),
                     "window_count": len(windows),
                     "model": model_name,
@@ -622,10 +651,13 @@ def _run_batch_extraction(
             },
         )
         current_batch_id = submission.batch_id
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "batch_submitted",
-                {
+                stage="extract.batch.submit",
+                label=f"Batch submitted {submission.batch_id}",
+                status=submission.status,
+                detail={
                     "batch_id": submission.batch_id,
                     "input_file_id": submission.input_file_id,
                     "status": submission.status,
@@ -663,7 +695,7 @@ def _run_batch_extraction(
         wait=batch_wait,
         poll_interval_seconds=batch_poll_interval_seconds,
         timeout_seconds=batch_timeout_seconds,
-        progress_callback=progress_callback,
+        progress=progress,
     )
     if status.status != "completed":
         report = _build_batch_status_report(
@@ -701,10 +733,12 @@ def _run_batch_extraction(
         error_text = client.download_file_text(status.error_file_id)
         error_path = runs_dir / f"{run_id}_extraction_batch_errors.jsonl"
         error_path.write_text(error_text, encoding="utf-8")
-    if progress_callback is not None:
-        progress_callback(
+    if progress is not None:
+        progress.emit(
             "batch_downloaded",
-            {
+            stage="extract.batch.download",
+            label=f"Downloaded batch {status.batch_id}",
+            detail={
                 "batch_id": status.batch_id,
                 "output_file_id": status.output_file_id,
                 "error_file_id": status.error_file_id,
@@ -732,7 +766,7 @@ def _run_batch_extraction(
         store_uncovered_text=store_uncovered_text,
         fuzzy_threshold=fuzzy_threshold,
         token_price=price,
-        progress_callback=progress_callback,
+        progress=progress,
     )
     report = _build_report(
         run_id=run_id,
@@ -767,10 +801,13 @@ def _run_batch_extraction(
         document_id=document.document_id,
         report=report,
     )
-    if progress_callback is not None:
-        progress_callback(
+    if progress is not None:
+        progress.emit(
             "completed",
-            {
+            stage="extract.completed",
+            label="Batch extraction completed",
+            status="completed",
+            detail={
                 "report_path": report["report_path"],
                 "span_count": report["span_count"],
                 "located_count": report["locator_success_count"],
@@ -788,16 +825,19 @@ def _wait_for_batch_status(
     wait: bool,
     poll_interval_seconds: float,
     timeout_seconds: float | None,
-    progress_callback: ProgressCallback | None,
+    progress: ProgressReporter | None,
 ) -> BatchStatus:
     started_at = time.perf_counter()
     terminal_statuses = {"completed", "failed", "expired", "cancelled", "cancelling"}
     while True:
         status = client.retrieve_chat_batch(batch_id)
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "batch_status",
-                {
+                stage="extract.batch.wait",
+                label=f"Batch status {status.status}",
+                status=status.status,
+                detail={
                     "batch_id": status.batch_id,
                     "status": status.status,
                     "request_counts": status.request_counts,
@@ -898,7 +938,7 @@ def _apply_batch_outputs(
     store_uncovered_text: bool,
     fuzzy_threshold: float,
     token_price: TokenPrice,
-    progress_callback: ProgressCallback | None,
+    progress: ProgressReporter | None,
 ) -> list[ExtractionResult]:
     by_id = {window.window_id: window for window in windows}
     output_by_id = {output.custom_id: output for output in outputs}
@@ -909,10 +949,15 @@ def _apply_batch_outputs(
     for window_index, window_id in enumerate(selected_window_ids, start=1):
         window = by_id[window_id]
         output = output_by_id[window_id]
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "window_start",
-                {
+                stage="extract.window",
+                label=f"Apply batch output {window.window_id}",
+                current=window_index - 1,
+                total=total_windows,
+                unit="windows",
+                detail={
                     "window_index": window_index,
                     "total_windows": total_windows,
                     "window_id": window.window_id,
@@ -949,10 +994,16 @@ def _apply_batch_outputs(
                     raise_parse_errors=True,
                 )
             except WindowPayloadParseError as error:
-                if progress_callback is not None:
-                    progress_callback(
+                if progress is not None:
+                    progress.emit(
                         "batch_window_retry",
-                        {
+                        stage="extract.batch.retry",
+                        label=f"Retry {window.window_id}",
+                        current=window_index,
+                        total=total_windows,
+                        unit="windows",
+                        message=str(error).splitlines()[0],
+                        detail={
                             "window_index": window_index,
                             "total_windows": total_windows,
                             "window_id": window.window_id,
@@ -974,7 +1025,7 @@ def _apply_batch_outputs(
                     store_located_text=store_located_text,
                     fuzzy_threshold=fuzzy_threshold,
                     token_price=token_price,
-                    progress_callback=progress_callback,
+                    progress=progress,
                     progress_payload={
                         "window_index": window_index,
                         "total_windows": total_windows,
@@ -1010,10 +1061,15 @@ def _apply_batch_outputs(
                     raw_output=result.raw_output,
                 )
             results.append(result)
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "window_done",
-                {
+                stage="extract.window",
+                label=f"Completed {window.window_id}",
+                current=window_index,
+                total=total_windows,
+                unit="windows",
+                detail={
                     "window_index": window_index,
                     "total_windows": total_windows,
                     "window_id": window.window_id,
@@ -1367,7 +1423,7 @@ def extract_window(
     store_located_text: bool,
     fuzzy_threshold: float,
     token_price: TokenPrice,
-    progress_callback: ProgressCallback | None = None,
+    progress: ProgressReporter | None = None,
     progress_payload: dict[str, Any] | None = None,
 ) -> list[ExtractionResult]:
     messages = build_extraction_messages(
@@ -1386,10 +1442,15 @@ def extract_window(
     for attempt in range(1, retry_policy.max_attempts + 1):
         try:
             api_started_at = time.perf_counter()
-            if progress_callback is not None:
-                progress_callback(
+            if progress is not None:
+                progress.emit(
                     "api_start",
-                    {
+                    stage="extract.api",
+                    label=f"Call extraction model for {window.window_id}",
+                    current=(progress_payload or {}).get("window_index"),
+                    total=(progress_payload or {}).get("total_windows"),
+                    unit="windows",
+                    detail={
                         **(progress_payload or {}),
                         "attempt": attempt,
                     },
@@ -1399,10 +1460,15 @@ def extract_window(
                 model=model,
                 temperature=temperature,
             )
-            if progress_callback is not None:
-                progress_callback(
+            if progress is not None:
+                progress.emit(
                     "api_done",
-                    {
+                    stage="extract.api",
+                    label=f"Model response for {window.window_id}",
+                    current=(progress_payload or {}).get("window_index"),
+                    total=(progress_payload or {}).get("total_windows"),
+                    unit="windows",
+                    detail={
                         **(progress_payload or {}),
                         "attempt": attempt,
                         "elapsed_seconds": round(time.perf_counter() - api_started_at, 2),
@@ -1428,10 +1494,15 @@ def extract_window(
                 store_located_text=store_located_text,
                 fuzzy_threshold=fuzzy_threshold,
             )
-            if progress_callback is not None:
-                progress_callback(
+            if progress is not None:
+                progress.emit(
                     "parse_locate_done",
-                    {
+                    stage="extract.locate",
+                    label=f"Parsed and located {window.window_id}",
+                    current=(progress_payload or {}).get("window_index"),
+                    total=(progress_payload or {}).get("total_windows"),
+                    unit="windows",
+                    detail={
                         **(progress_payload or {}),
                         "attempt": attempt,
                         "elapsed_seconds": round(time.perf_counter() - parse_locate_started_at, 2),

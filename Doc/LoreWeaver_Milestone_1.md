@@ -1108,7 +1108,7 @@ Span 抽取和定位稳定，定位成功的 Span 能够作为后续索引输入
 - 新增双锚点定位器，覆盖 start/end anchor 的精确匹配、轻清洗匹配、局部模糊匹配、多候选消歧与过长锚点边界侧裁剪；
 - 新增 Span、定位候选、抽取失败队列、抽取报告 SQLite 表，并支持一个窗口落多个 Span；
 - 在 `candidate_windows` 增加 `uncovered_text` 调试字段，用 located Span 区间反算并合并窗口内未覆盖原文，便于 DBeaver 人工抽查是否确实不需要索引；
-- 新增 `loreweaver extract` CLI，可用 `--limit` 做小样本 API 调试，也可用 `--mock` 做无 API 管线验收；默认打印 API、解析定位、落库与窗口级耗时进度，可用 `--no-progress` 关闭；
+- 新增 `loreweaver extract` CLI，可用 `--limit` 做小样本 API 调试，也可用 `--mock` 做无 API 管线验收；流程反馈由统一 ProgressEvent 事件流驱动，可用全局 `--progress auto|rich|text|jsonl|none` 选择 CLI 渲染方式；
 - 新增输入/输出 token 与人民币成本预估，当前测试模型价格配置为输入 `¥0.002 / K Tokens`、输出 `¥0.003 / K Tokens`；
 - 更新 `.env.example`、`configs/models.yaml`、`configs/default.yaml` 与 README，密钥只通过环境变量读取，不写入业务代码。
 

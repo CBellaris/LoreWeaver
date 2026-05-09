@@ -284,6 +284,44 @@ pre.json-view {
   margin-bottom: 10px;
 }
 
+.job-progress {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.progress-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.progress-row strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.progress-row span {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.progress-fill {
+  width: 0%;
+  height: 100%;
+  background: var(--accent);
+  transition: width 160ms ease;
+}
+
 .event-log {
   height: 390px;
   overflow: auto;

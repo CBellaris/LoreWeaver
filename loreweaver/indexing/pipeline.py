@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loreweaver.config import AppConfig
 from loreweaver.indexing.embeddings import (
@@ -18,12 +18,10 @@ from loreweaver.indexing.embeddings import (
     embedding_settings_from_configs,
 )
 from loreweaver.models.span import Span
+from loreweaver.progress import ProgressReporter
 from loreweaver.storage.bm25_store import BM25Index, bm25_index_path
 from loreweaver.storage.qdrant_store import QdrantVectorStore, VectorRecord
 from loreweaver.storage.sqlite_store import SQLiteStore
-
-
-ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -43,7 +41,7 @@ def build_m14_indexes(
     document_id: str | None = None,
     limit: int | None = None,
     mock_embeddings: bool = False,
-    progress_callback: ProgressCallback | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     store = SQLiteStore(storage_config.sqlite_path)
     store.initialize()
@@ -74,10 +72,15 @@ def build_m14_indexes(
     else:
         client = OpenAICompatibleEmbeddingClient(embedding_settings)
 
-    if progress_callback is not None:
-        progress_callback(
+    if progress is not None:
+        progress.emit(
             "planned",
-            {
+            stage="index.plan",
+            label=f"Plan indexing for {len(spans)} spans",
+            current=0,
+            total=len(spans),
+            unit="spans",
+            detail={
                 "document_id": document.document_id,
                 "span_count": len(spans),
                 "embedding_model": embedding_settings.model,
@@ -91,7 +94,7 @@ def build_m14_indexes(
         settings=effective_settings,
         client=client,
         config=config,
-        progress_callback=progress_callback,
+        progress=progress,
     )
     vector_size = len(embedded_spans[0].vector)
     if effective_settings.expected_dimensions and vector_size != effective_settings.expected_dimensions:
@@ -163,8 +166,17 @@ def build_m14_indexes(
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     store.insert_index_report(run_id, document.document_id, report)
 
-    if progress_callback is not None:
-        progress_callback("completed", report)
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="index.completed",
+            label="Indexing completed",
+            current=len(spans),
+            total=len(spans),
+            unit="spans",
+            status="completed",
+            detail=report,
+        )
     return report
 
 
@@ -175,7 +187,7 @@ def embed_spans(
     settings: EmbeddingSettings,
     client: EmbeddingClient,
     config: AppConfig,
-    progress_callback: ProgressCallback | None = None,
+    progress: ProgressReporter | None = None,
 ) -> tuple[list[EmbeddedSpan], dict[str, float]]:
     input_config = config.values.get("indexing", {}).get("embedding_input", {})
     include_key_quote = bool(input_config.get("include_key_quote", False))
@@ -208,10 +220,15 @@ def embed_spans(
     input_tokens = 0
     for batch_start in range(0, len(missing), settings.batch_size):
         batch = missing[batch_start : batch_start + settings.batch_size]
-        if progress_callback is not None:
-            progress_callback(
+        if progress is not None:
+            progress.emit(
                 "embedding_batch_start",
-                {
+                stage="index.embedding",
+                label=f"Embed batch {batch_start // settings.batch_size + 1}",
+                current=min(batch_start + len(batch), len(missing)),
+                total=len(missing),
+                unit="spans",
+                detail={
                     "batch_index": batch_start // settings.batch_size + 1,
                     "batch_count": (len(missing) + settings.batch_size - 1) // settings.batch_size,
                     "batch_size": len(batch),

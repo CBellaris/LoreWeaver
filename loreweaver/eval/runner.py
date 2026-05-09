@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loreweaver.config import AppConfig
 from loreweaver.eval.metrics import (
@@ -16,10 +16,9 @@ from loreweaver.eval.metrics import (
 )
 from loreweaver.eval.question_set import EvalQuestion, load_question_set
 from loreweaver.logging import new_run_id
+from loreweaver.progress import ProgressReporter
 from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
-
-ProgressCallback = Callable[[str, dict[str, Any]], None]
 
 EVAL_RETRIEVAL_PROFILES: dict[str, dict[str, int]] = {
     "broad": {
@@ -53,7 +52,7 @@ def run_eval(
     mock_embeddings: bool = False,
     mock_reranker: bool = False,
     no_reranker: bool = False,
-    progress: ProgressCallback | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Run LoreWeaver retrieval against a question set and score chapter recall."""
     questions = load_question_set(question_set_path)
@@ -75,10 +74,15 @@ def run_eval(
     predictions_path = Path(output_path)
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if progress:
-        progress(
+    if progress is not None:
+        progress.emit(
             "planned",
-            {
+            stage="eval.plan",
+            label=f"Plan evaluation for {len(questions)} questions",
+            current=0,
+            total=len(questions),
+            unit="questions",
+            detail={
                 "run_id": run_id,
                 "document_id": document.document_id,
                 "question_count": len(questions),
@@ -88,10 +92,15 @@ def run_eval(
     predictions: list[dict[str, Any]] = []
     scores: list[dict[str, Any]] = []
     for index, question in enumerate(questions, start=1):
-        if progress:
-            progress(
+        if progress is not None:
+            progress.emit(
                 "question_start",
-                {
+                stage="eval.question",
+                label=f"Run {question.question_id}",
+                current=index - 1,
+                total=len(questions),
+                unit="questions",
+                detail={
                     "index": index,
                     "total": len(questions),
                     "question_id": question.question_id,
@@ -107,6 +116,7 @@ def run_eval(
             mock_embeddings=mock_embeddings,
             mock_reranker=mock_reranker,
             no_reranker=no_reranker,
+            progress=progress.child(command="retrieve") if progress is not None else None,
         )
         predicted_chapters = _attach_chapter_titles(
             chapter_ranking_from_retrieval_report(retrieval_report),
@@ -121,10 +131,15 @@ def run_eval(
         )
         predictions.append(prediction)
         scores.append(question_score)
-        if progress:
-            progress(
+        if progress is not None:
+            progress.emit(
                 "question_done",
-                {
+                stage="eval.question",
+                label=f"Scored {question.question_id}",
+                current=index,
+                total=len(questions),
+                unit="questions",
+                detail={
                     "index": index,
                     "total": len(questions),
                     "question_id": question.question_id,
@@ -156,6 +171,21 @@ def run_eval(
     report["failures_path"] = str(failures_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     failures_path.write_text(render_failure_report(predictions), encoding="utf-8")
+    if progress is not None:
+        progress.emit(
+            "completed",
+            stage="eval.completed",
+            label="Evaluation completed",
+            current=len(questions),
+            total=len(questions),
+            unit="questions",
+            status="completed",
+            detail={
+                "predictions_path": str(predictions_path),
+                "report_path": str(report_path),
+                "failures_path": str(failures_path),
+            },
+        )
     return report
 
 

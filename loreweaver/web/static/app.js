@@ -228,6 +228,7 @@ async function runRetrievalWorkbench() {
 async function startJob(command, payload, resultTarget) {
   closeEventSource();
   $("#event-log").innerHTML = "";
+  resetProgress();
   $("#job-status").textContent = "starting";
   $("#cancel-job").disabled = false;
   try {
@@ -240,6 +241,7 @@ async function startJob(command, payload, resultTarget) {
     state.eventSource = new EventSource(`/api/jobs/${job.job_id}/events`);
     state.eventSource.onmessage = (message) => {
       const event = JSON.parse(message.data);
+      updateProgress(event);
       appendEvent(event);
       if (event.event === "completed") {
         renderResult(event.payload.result, resultTarget);
@@ -285,6 +287,29 @@ function appendEvent(event) {
   `;
   log.appendChild(item);
   log.scrollTop = log.scrollHeight;
+}
+
+function resetProgress() {
+  $("#job-progress-label").textContent = "waiting";
+  $("#job-progress-meta").textContent = "";
+  $("#job-progress-fill").style.width = "0%";
+}
+
+function updateProgress(event) {
+  const payload = event.payload || {};
+  if (!payload.stage) return;
+  $("#job-progress-label").textContent = `${payload.stage}: ${payload.label || event.event}`;
+  const parts = [];
+  if (payload.current !== null && payload.current !== undefined && payload.total !== null && payload.total !== undefined) {
+    parts.push(`${payload.current}/${payload.total}${payload.unit ? ` ${payload.unit}` : ""}`);
+  }
+  if (payload.percent !== null && payload.percent !== undefined) {
+    const percent = Math.max(0, Math.min(100, Number(payload.percent)));
+    parts.push(`${percent.toFixed(1)}%`);
+    $("#job-progress-fill").style.width = `${percent}%`;
+  }
+  if (payload.status && payload.status !== "running") parts.push(payload.status);
+  $("#job-progress-meta").textContent = parts.join(" · ");
 }
 
 function closeEventSource() {
@@ -508,7 +533,6 @@ function isBooleanField(name) {
     "mock",
     "batch",
     "batch_wait",
-    "no_progress",
     "mock_embeddings",
     "mock_reranker",
     "no_reranker",

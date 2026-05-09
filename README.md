@@ -103,6 +103,17 @@ python3 -m loreweaver.cli graph --list
 python3 -m loreweaver.cli retrieve "塞西尔家族为什么衰落？" --mock-embeddings --mock-reranker
 ```
 
+Progress output is controlled by the global `--progress` option:
+
+```bash
+python3 -m loreweaver.cli --progress rich extract --limit 10 --mock
+python3 -m loreweaver.cli --progress jsonl ask "塞西尔家族为什么衰落？" --mock-embeddings --mock-reranker --mock-answer
+python3 -m loreweaver.cli --progress none index --mock-embeddings
+```
+
+CLI rendering and Web UI task updates are both fed by the same structured progress
+event stream.
+
 For M1.9 chapter-level recall evaluation, build a long-context corpus, generate a JSONL question set with the configured OpenAI-compatible eval model, then run LoreWeaver retrieval against that set:
 
 ```bash

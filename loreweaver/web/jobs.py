@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from loreweaver.config import load_config
 from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
@@ -20,6 +20,7 @@ from loreweaver.ingest.pipeline import ingest_text
 from loreweaver.ingest.window_splitter import build_candidate_windows
 from loreweaver.indexing.pipeline import build_m14_indexes, search_bm25_index, search_vector_index
 from loreweaver.logging import new_run_id
+from loreweaver.progress import ProgressEvent, ProgressReporter, ProgressSink
 from loreweaver.qa.answerer import ask_m18
 from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
@@ -45,6 +46,7 @@ class WebJob:
     completed_at: str | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    progress: dict[str, Any] | None = None
     events: "queue.Queue[JobEvent]" = field(default_factory=queue.Queue)
     cancel_requested: threading.Event = field(default_factory=threading.Event)
 
@@ -59,6 +61,7 @@ class WebJob:
             "completed_at": self.completed_at,
             "result": self.result,
             "error": self.error,
+            "progress": self.progress,
         }
 
 
@@ -111,6 +114,11 @@ class JobManager:
         job.status = "running"
         job.started_at = _now()
         _emit(job, "started", {"command": job.command})
+        progress = ProgressReporter(
+            command=job.command,
+            run_id=job.job_id,
+            sinks=[WebProgressSink(job)],
+        )
         try:
             result = _dispatch(
                 command=job.command,
@@ -119,7 +127,7 @@ class JobManager:
                 storage_config_path=self.storage_config_path,
                 models_config_path=self.models_config_path,
                 env_lock=self._env_lock,
-                progress_callback=_progress_callback(job),
+                progress=progress,
             )
             job.result = jsonable(result)
             job.status = "completed"
@@ -165,10 +173,9 @@ def command_specs() -> dict[str, Any]:
                 "batch_poll_interval",
                 "batch_timeout",
                 "batch_completion_window",
-                "no_progress",
             ],
         },
-        "index": {"label": "Index", "fields": ["document_id", "limit", "mock_embeddings", "no_progress"]},
+        "index": {"label": "Index", "fields": ["document_id", "limit", "mock_embeddings"]},
         "search-vector": {"label": "Search Vector", "fields": ["query", "document_id", "top_k", "mock_embeddings"]},
         "search-bm25": {"label": "Search BM25", "fields": ["query", "document_id", "top_k"]},
         "spans": {"label": "Spans", "fields": ["document_id", "top_salience"]},
@@ -203,7 +210,7 @@ def _dispatch(
     storage_config_path: str,
     models_config_path: str,
     env_lock: threading.Lock,
-    progress_callback: Callable[[str, dict[str, Any]], None],
+    progress: ProgressReporter | None,
 ) -> dict[str, Any]:
     env_overrides = _env_overrides(payload)
     safe_payload = _payload_without_env(payload)
@@ -214,7 +221,7 @@ def _dispatch(
             config_path=config_path,
             storage_config_path=storage_config_path,
             models_config_path=models_config_path,
-            progress_callback=progress_callback,
+            progress=progress,
         )
 
 
@@ -225,7 +232,7 @@ def _dispatch_inner(
     config_path: str,
     storage_config_path: str,
     models_config_path: str,
-    progress_callback: Callable[[str, dict[str, Any]], None],
+    progress: ProgressReporter | None,
 ) -> dict[str, Any]:
     config = load_config(config_path)
     storage_config = load_config(storage_config_path)
@@ -252,6 +259,7 @@ def _dispatch_inner(
             title=_optional_str(payload.get("title")),
             author=_optional_str(payload.get("author")),
             max_chapters=_optional_int(payload.get("max_chapters")),
+            progress=progress.child(command="ingest", run_id=run_id) if progress is not None else None,
         )
     if command == "windows":
         return build_candidate_windows(
@@ -264,6 +272,7 @@ def _dispatch_inner(
             min_window_chars=_optional_int(payload.get("min_chars")),
             max_window_chars=_optional_int(payload.get("max_chars")),
             split_by_chapter=bool(payload.get("by_chapter")),
+            progress=progress.child(command="windows") if progress is not None else None,
         )
     if command == "extract":
         if bool(payload.get("list_windows")):
@@ -291,7 +300,7 @@ def _dispatch_inner(
             batch_poll_interval_seconds=float(payload.get("batch_poll_interval") or 30.0),
             batch_timeout_seconds=_optional_float(payload.get("batch_timeout")),
             batch_completion_window=str(payload.get("batch_completion_window") or "24h"),
-            progress_callback=None if bool(payload.get("no_progress")) else progress_callback,
+            progress=progress,
         )
     if command == "index":
         return build_m14_indexes(
@@ -302,7 +311,7 @@ def _dispatch_inner(
             document_id=_optional_str(payload.get("document_id")),
             limit=_optional_int(payload.get("limit")),
             mock_embeddings=bool(payload.get("mock_embeddings")),
-            progress_callback=None if bool(payload.get("no_progress")) else progress_callback,
+            progress=progress,
         )
     if command == "search-vector":
         return search_vector_index(
@@ -347,6 +356,7 @@ def _dispatch_inner(
             min_members=_optional_int(payload.get("min_members")),
             use_embeddings=False if bool(payload.get("no_embeddings")) else None,
             sync_neo4j=_sync_neo4j(payload),
+            progress=progress,
         )
     if command == "retrieve":
         return retrieve_m16(
@@ -358,6 +368,7 @@ def _dispatch_inner(
             mock_embeddings=bool(payload.get("mock_embeddings")),
             mock_reranker=bool(payload.get("mock_reranker")),
             no_reranker=bool(payload.get("no_reranker")),
+            progress=progress,
         )
     if command == "evidence":
         retrieval_report = retrieve_m16(
@@ -369,11 +380,13 @@ def _dispatch_inner(
             mock_embeddings=bool(payload.get("mock_embeddings")),
             mock_reranker=bool(payload.get("mock_reranker")),
             no_reranker=bool(payload.get("no_reranker")),
+            progress=progress.child(command="retrieve") if progress is not None else None,
         )
         return assemble_evidence_pack_from_retrieval_report(
             config=config,
             storage_config=storage_config,
             retrieval_report=retrieval_report,
+            progress=progress,
         )
     if command == "ask":
         return ask_m18(
@@ -386,17 +399,22 @@ def _dispatch_inner(
             mock_reranker=bool(payload.get("mock_reranker")),
             no_reranker=bool(payload.get("no_reranker")),
             mock_answer=bool(payload.get("mock_answer")),
+            progress=progress,
         )
     raise ValueError(f"Unsupported command: {command}")
 
 
-def _progress_callback(job: WebJob) -> Callable[[str, dict[str, Any]], None]:
-    def progress(event: str, payload: dict[str, Any]) -> None:
+class WebProgressSink(ProgressSink):
+    def __init__(self, job: WebJob) -> None:
+        self.job = job
+
+    def emit(self, event: ProgressEvent) -> None:
+        job = self.job
         if job.cancel_requested.is_set():
             raise RuntimeError("Job cancelled")
-        _emit(job, event, payload)
-
-    return progress
+        payload = event.to_dict()
+        job.progress = payload
+        _emit(job, event.name, payload)
 
 
 def _emit(job: WebJob, event: str, payload: dict[str, Any]) -> None:

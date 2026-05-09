@@ -22,6 +22,7 @@ from loreweaver.indexing.pipeline import (
     search_vector_index,
 )
 from loreweaver.logging import configure_logging, new_run_id
+from loreweaver.progress import build_cli_progress_reporter
 from loreweaver.qa.answerer import ask_m18
 from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
@@ -39,6 +40,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to the LoreWeaver config file.",
     )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging.")
+    parser.add_argument(
+        "--progress",
+        choices=("auto", "rich", "text", "jsonl", "none"),
+        default="auto",
+        help="Progress renderer for long-running commands.",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -219,11 +226,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default="24h",
         help="Batch completion window passed to the provider.",
     )
-    extract_parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Disable per-window extraction progress output.",
-    )
     extract_parser.set_defaults(func=_extract)
 
     index_parser = subparsers.add_parser(
@@ -253,11 +255,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mock-embeddings",
         action="store_true",
         help="Use deterministic local mock embeddings without calling an API.",
-    )
-    index_parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Disable embedding progress output.",
     )
     index_parser.set_defaults(func=_index)
 
@@ -594,11 +591,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip reranking and keep Union fused-score ordering.",
     )
-    eval_run_parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Disable per-question progress output.",
-    )
     eval_run_parser.set_defaults(func=_eval_run)
 
     eval_report_parser = eval_subparsers.add_parser(
@@ -672,20 +664,29 @@ def _ingest(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     run_id = new_run_id("ingest")
+    progress, progress_sink = build_cli_progress_reporter(
+        command="ingest",
+        run_id=run_id,
+        mode=args.progress,
+    )
 
     source_path = Path(args.source) if args.source else config.sample_source_path
     if source_path is None:
         raise ValueError("No source path provided and sample.source_path is not configured.")
 
-    report = ingest_text(
-        config=config,
-        storage_config=storage_config,
-        run_id=run_id,
-        source_path=source_path,
-        title=args.title,
-        author=args.author,
-        max_chapters=args.max_chapters,
-    )
+    try:
+        report = ingest_text(
+            config=config,
+            storage_config=storage_config,
+            run_id=run_id,
+            source_path=source_path,
+            title=args.title,
+            author=args.author,
+            max_chapters=args.max_chapters,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     document = report["document"]
     split = report["chapter_split"]
@@ -718,18 +719,27 @@ def _windows(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     run_id = new_run_id("windows")
-
-    report = build_candidate_windows(
-        config=config,
-        storage_config=storage_config,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="windows",
         run_id=run_id,
-        document_id=args.document_id,
-        window_size_chars=args.window_size,
-        overlap_ratio=args.overlap_ratio,
-        min_window_chars=args.min_chars,
-        max_window_chars=args.max_chars,
-        split_by_chapter=args.by_chapter,
+        mode=args.progress,
     )
+
+    try:
+        report = build_candidate_windows(
+            config=config,
+            storage_config=storage_config,
+            run_id=run_id,
+            document_id=args.document_id,
+            window_size_chars=args.window_size,
+            overlap_ratio=args.overlap_ratio,
+            min_window_chars=args.min_chars,
+            max_window_chars=args.max_chars,
+            split_by_chapter=args.by_chapter,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     document = report["document"]
     split = report["window_split"]
@@ -782,28 +792,34 @@ def _extract(args: argparse.Namespace) -> int:
         return 0
 
     run_id = new_run_id("extract")
-    progress = _build_extract_progress_printer() if not args.no_progress else None
-
-    report = extract_document_windows(
-        config=config,
-        storage_config=storage_config,
-        models_config=models_config,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="extract",
         run_id=run_id,
-        document_id=args.document_id,
-        limit=args.limit,
-        offset=args.offset,
-        window_ids=args.window_id,
-        window_ranges=args.window_range,
-        mock=args.mock,
-        batch=args.batch,
-        batch_id=args.batch_id,
-        batch_model=args.batch_model,
-        batch_wait=args.batch_wait,
-        batch_poll_interval_seconds=args.batch_poll_interval,
-        batch_timeout_seconds=args.batch_timeout,
-        batch_completion_window=args.batch_completion_window,
-        progress_callback=progress,
+        mode=args.progress,
     )
+    try:
+        report = extract_document_windows(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            run_id=run_id,
+            document_id=args.document_id,
+            limit=args.limit,
+            offset=args.offset,
+            window_ids=args.window_id,
+            window_ranges=args.window_range,
+            mock=args.mock,
+            batch=args.batch,
+            batch_id=args.batch_id,
+            batch_model=args.batch_model,
+            batch_wait=args.batch_wait,
+            batch_poll_interval_seconds=args.batch_poll_interval,
+            batch_timeout_seconds=args.batch_timeout,
+            batch_completion_window=args.batch_completion_window,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     print(f"run_id: {run_id}")
     print("command: extract")
@@ -841,18 +857,24 @@ def _index(args: argparse.Namespace) -> int:
     storage_config = _load_storage_config(args.storage_config)
     models_config = load_config(args.models_config)
     run_id = new_run_id("index")
-    progress = _build_index_progress_printer() if not args.no_progress else None
-
-    report = build_m14_indexes(
-        config=config,
-        storage_config=storage_config,
-        models_config=models_config,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="index",
         run_id=run_id,
-        document_id=args.document_id,
-        limit=args.limit,
-        mock_embeddings=args.mock_embeddings,
-        progress_callback=progress,
+        mode=args.progress,
     )
+    try:
+        report = build_m14_indexes(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            run_id=run_id,
+            document_id=args.document_id,
+            limit=args.limit,
+            mock_embeddings=args.mock_embeddings,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     print(f"run_id: {run_id}")
     print("command: index")
@@ -969,17 +991,26 @@ def _graph(args: argparse.Namespace) -> int:
         sync_neo4j = True
     if args.no_neo4j:
         sync_neo4j = False
-    report = build_m15_graph(
-        config=config,
-        storage_config=storage_config,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="graph",
         run_id=run_id,
-        document_id=args.document_id,
-        cluster_count=args.cluster_count,
-        members_per_cluster=args.members_per_cluster,
-        min_members=args.min_members,
-        use_embeddings=False if args.no_embeddings else None,
-        sync_neo4j=sync_neo4j,
+        mode=args.progress,
     )
+    try:
+        report = build_m15_graph(
+            config=config,
+            storage_config=storage_config,
+            run_id=run_id,
+            document_id=args.document_id,
+            cluster_count=args.cluster_count,
+            members_per_cluster=args.members_per_cluster,
+            min_members=args.min_members,
+            use_embeddings=False if args.no_embeddings else None,
+            sync_neo4j=sync_neo4j,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     print(f"run_id: {run_id}")
     print("command: graph")
@@ -1009,16 +1040,25 @@ def _retrieve(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     models_config = load_config(args.models_config)
-    report = retrieve_m16(
-        config=config,
-        storage_config=storage_config,
-        models_config=models_config,
-        question=args.question,
-        document_id=args.document_id,
-        mock_embeddings=args.mock_embeddings,
-        mock_reranker=args.mock_reranker,
-        no_reranker=args.no_reranker,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="retrieve",
+        run_id=None,
+        mode=args.progress,
     )
+    try:
+        report = retrieve_m16(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            question=args.question,
+            document_id=args.document_id,
+            mock_embeddings=args.mock_embeddings,
+            mock_reranker=args.mock_reranker,
+            no_reranker=args.no_reranker,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     print(f"run_id: {report['run_id']}")
     print("command: retrieve")
@@ -1049,21 +1089,31 @@ def _evidence(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     models_config = load_config(args.models_config)
-    retrieval_report = retrieve_m16(
-        config=config,
-        storage_config=storage_config,
-        models_config=models_config,
-        question=args.question,
-        document_id=args.document_id,
-        mock_embeddings=args.mock_embeddings,
-        mock_reranker=args.mock_reranker,
-        no_reranker=args.no_reranker,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="evidence",
+        run_id=None,
+        mode=args.progress,
     )
-    report = assemble_evidence_pack_from_retrieval_report(
-        config=config,
-        storage_config=storage_config,
-        retrieval_report=retrieval_report,
-    )
+    try:
+        retrieval_report = retrieve_m16(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            question=args.question,
+            document_id=args.document_id,
+            mock_embeddings=args.mock_embeddings,
+            mock_reranker=args.mock_reranker,
+            no_reranker=args.no_reranker,
+            progress=progress.child(command="retrieve") if progress is not None else None,
+        )
+        report = assemble_evidence_pack_from_retrieval_report(
+            config=config,
+            storage_config=storage_config,
+            retrieval_report=retrieval_report,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
     pack = report["evidence_pack"]
     assembly = report["assembly"]
 
@@ -1088,17 +1138,26 @@ def _ask(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     models_config = load_config(args.models_config)
-    report = ask_m18(
-        config=config,
-        storage_config=storage_config,
-        models_config=models_config,
-        question=args.question,
-        document_id=args.document_id,
-        mock_embeddings=args.mock_embeddings,
-        mock_reranker=args.mock_reranker,
-        no_reranker=args.no_reranker,
-        mock_answer=args.mock_answer,
+    progress, progress_sink = build_cli_progress_reporter(
+        command="ask",
+        run_id=None,
+        mode=args.progress,
     )
+    try:
+        report = ask_m18(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            question=args.question,
+            document_id=args.document_id,
+            mock_embeddings=args.mock_embeddings,
+            mock_reranker=args.mock_reranker,
+            no_reranker=args.no_reranker,
+            mock_answer=args.mock_answer,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
 
     validation = report["answer_validation"]
     qa = report["qa"]
@@ -1187,19 +1246,27 @@ def _eval_run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     storage_config = _load_storage_config(args.storage_config)
     models_config = load_config(args.models_config)
-    report = run_eval(
-        config=config,
-        storage_config=storage_config,
-        models_config=models_config,
-        question_set_path=args.questions,
-        document_id=args.document_id,
-        output_path=args.output,
-        limit=args.limit,
-        mock_embeddings=args.mock_embeddings,
-        mock_reranker=args.mock_reranker,
-        no_reranker=args.no_reranker,
-        progress=None if args.no_progress else _build_eval_progress_printer(),
+    progress, progress_sink = build_cli_progress_reporter(
+        command="eval",
+        run_id=None,
+        mode=args.progress,
     )
+    try:
+        report = run_eval(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            question_set_path=args.questions,
+            document_id=args.document_id,
+            output_path=args.output,
+            limit=args.limit,
+            mock_embeddings=args.mock_embeddings,
+            mock_reranker=args.mock_reranker,
+            no_reranker=args.no_reranker,
+            progress=progress,
+        )
+    finally:
+        _close_progress_sink(progress_sink)
     _print_eval_summary(report, command="eval run")
     return 0
 
@@ -1208,6 +1275,12 @@ def _eval_report(args: argparse.Namespace) -> int:
     report = summarize_eval_run(args.predictions)
     _print_eval_summary(report, command="eval report")
     return 0
+
+
+def _close_progress_sink(progress_sink: object | None) -> None:
+    close = getattr(progress_sink, "close", None)
+    if callable(close):
+        close()
 
 
 def _print_eval_summary(report: dict, *, command: str) -> None:
@@ -1232,235 +1305,6 @@ def _print_eval_summary(report: dict, *, command: str) -> None:
         f"mrr={overall['mrr']:.4f}"
     )
     print("status: ok")
-
-
-def _build_extract_progress_printer() -> object:
-    totals = {
-        "spans": 0,
-        "located": 0,
-        "failed": 0,
-        "cost": 0.0,
-    }
-
-    def progress(event: str, payload: dict) -> None:
-        if event == "planned":
-            print(
-                "[extract] "
-                f"document={payload['document_id']} "
-                f"model={payload['model']} "
-                f"mock={payload['mock']} "
-                f"windows={payload['total_windows']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "window_start":
-            print(
-                "[extract] "
-                f"window {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"chars={payload['char_count']} ...",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "api_start":
-            print(
-                "[extract] "
-                f"api start {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"attempt={payload['attempt']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "api_done":
-            usage = ""
-            if payload["input_tokens"] or payload["output_tokens"]:
-                usage = (
-                    f" input_tokens={payload['input_tokens']}"
-                    f" output_tokens={payload['output_tokens']}"
-                )
-            print(
-                "[extract] "
-                f"api done {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"attempt={payload['attempt']} "
-                f"elapsed={payload['elapsed_seconds']}s"
-                f"{usage}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "batch_upload_start":
-            print(
-                "[extract] "
-                f"batch upload model={payload['model']} "
-                f"windows={payload['window_count']} "
-                f"input={payload['input_path']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "batch_submitted":
-            print(
-                "[extract] "
-                f"batch submitted id={payload['batch_id']} "
-                f"status={payload['status']} "
-                f"input_file={payload['input_file_id']} "
-                f"windows={payload['window_count']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "batch_status":
-            counts = payload.get("request_counts") or {}
-            counts_text = ""
-            if counts:
-                counts_text = " " + " ".join(f"{key}={value}" for key, value in counts.items())
-            print(
-                "[extract] "
-                f"batch status id={payload['batch_id']} "
-                f"status={payload['status']}"
-                f"{counts_text}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "batch_downloaded":
-            print(
-                "[extract] "
-                f"batch downloaded id={payload['batch_id']} "
-                f"output={payload['output_path']} "
-                f"errors={payload['error_path']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "batch_window_retry":
-            reason = str(payload.get("reason", "")).splitlines()[0]
-            print(
-                "[extract] "
-                f"batch window retry {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"reason={reason}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "parse_locate_done":
-            print(
-                "[extract] "
-                f"parse+locate {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"spans={payload['span_count']} "
-                f"located={payload['located_count']} "
-                f"failed={payload['failed_count']} "
-                f"elapsed={payload['elapsed_seconds']}s",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "db_write_done":
-            print(
-                "[extract] "
-                f"db write {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"elapsed={payload['elapsed_seconds']}s",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "window_done":
-            totals["spans"] += payload["span_count"]
-            totals["located"] += payload["located_count"]
-            totals["failed"] += payload["failed_count"]
-            totals["cost"] += payload["estimated_cost_yuan"]
-            print(
-                "[extract] "
-                f"done {payload['window_index']}/{payload['total_windows']} "
-                f"{payload['window_id']} "
-                f"spans={payload['span_count']} "
-                f"located={payload['located_count']} "
-                f"failed={payload['failed_count']} "
-                f"cost=CNY {payload['estimated_cost_yuan']:.6f} "
-                f"uncovered_chars={payload['uncovered_chars']} "
-                f"elapsed={payload['elapsed_seconds']}s "
-                f"total_spans={totals['spans']} "
-                f"total_failed={totals['failed']} "
-                f"total_cost=CNY {totals['cost']:.6f}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "completed":
-            print(
-                "[extract] "
-                f"completed spans={payload['span_count']} "
-                f"located={payload['located_count']} "
-                f"failed={payload['failed_count']} "
-                f"cost=CNY {payload['estimated_cost_yuan']:.6f} "
-                f"report={payload['report_path']}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    return progress
-
-
-def _build_eval_progress_printer() -> object:
-    def progress(event: str, payload: dict) -> None:
-        if event == "planned":
-            print(
-                "[eval] "
-                f"run_id={payload['run_id']} "
-                f"document={payload['document_id']} "
-                f"questions={payload['question_count']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "question_start":
-            print(
-                "[eval] "
-                f"question {payload['index']}/{payload['total']} "
-                f"{payload['question_id']} ...",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "question_done":
-            print(
-                "[eval] "
-                f"done {payload['index']}/{payload['total']} "
-                f"{payload['question_id']} "
-                f"recall@20={payload['weighted_recall_at_20']:.3f} "
-                f"facet@20={payload['facet_coverage_at_20']:.3f} "
-                f"mrr={payload['mrr']:.3f}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    return progress
-
-
-def _build_index_progress_printer() -> object:
-    def progress(event: str, payload: dict) -> None:
-        if event == "planned":
-            print(
-                "[index] "
-                f"document={payload['document_id']} "
-                f"spans={payload['span_count']} "
-                f"embedding_model={payload['embedding_model']} "
-                f"mock_embeddings={payload['mock_embeddings']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "embedding_batch_start":
-            print(
-                "[index] "
-                f"embedding batch {payload['batch_index']}/{payload['batch_count']} "
-                f"size={payload['batch_size']}",
-                file=sys.stderr,
-                flush=True,
-            )
-        elif event == "completed":
-            print(
-                "[index] "
-                f"completed vectors={payload['qdrant']['collection_count']} "
-                f"bm25_docs={payload['bm25']['document_count']} "
-                f"report={payload['report_path']}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    return progress
 
 
 def _print_search_results(results: list[dict]) -> None:
