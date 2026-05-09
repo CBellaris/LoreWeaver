@@ -9,6 +9,9 @@ from pathlib import Path
 from loreweaver import __version__
 from loreweaver.config import load_config
 from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
+from loreweaver.eval.corpus import build_chapter_corpus
+from loreweaver.eval.generator import generate_question_set
+from loreweaver.eval.runner import run_eval, summarize_eval_run
 from loreweaver.extraction.extractor import extract_document_windows, list_extraction_windows
 from loreweaver.graph.center_span import build_m15_graph, list_graph_clusters
 from loreweaver.ingest.pipeline import ingest_text
@@ -22,11 +25,6 @@ from loreweaver.logging import configure_logging, new_run_id
 from loreweaver.qa.answerer import ask_m18
 from loreweaver.retrieval.pipeline import retrieve_m16
 from loreweaver.storage.sqlite_store import SQLiteStore
-
-
-PIPELINE_COMMANDS = (
-    "eval",
-)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -495,17 +493,120 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ask_parser.set_defaults(func=_ask)
 
-    for command in PIPELINE_COMMANDS:
-        command_parser = subparsers.add_parser(
-            command,
-            help=f"M1 command placeholder: {command}.",
-        )
-        command_parser.add_argument(
-            "args",
-            nargs=argparse.REMAINDER,
-            help="Arguments reserved for later M1 stages.",
-        )
-        command_parser.set_defaults(func=_placeholder)
+    eval_parser = subparsers.add_parser(
+        "eval",
+        help="M1.9 eval: build long-context question sets and score chapter recall.",
+    )
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command")
+    eval_parser.set_defaults(func=_eval_help)
+
+    eval_corpus_parser = eval_subparsers.add_parser(
+        "build-corpus",
+        help="Export persisted normalized chapters for long-context question generation.",
+    )
+    eval_corpus_parser.add_argument(
+        "--document-id",
+        help="Document id to export. Defaults to the latest SQLite document.",
+    )
+    eval_corpus_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing the SQLite path.",
+    )
+    eval_corpus_parser.add_argument(
+        "--chapter-start",
+        type=int,
+        default=1,
+        help="First 1-based chapter index to include.",
+    )
+    eval_corpus_parser.add_argument(
+        "--chapter-end",
+        type=int,
+        default=100,
+        help="Last 1-based chapter index to include.",
+    )
+    eval_corpus_parser.add_argument("--output", help="Output corpus JSON path.")
+    eval_corpus_parser.set_defaults(func=_eval_build_corpus)
+
+    eval_generate_parser = eval_subparsers.add_parser(
+        "generate",
+        help="Call the configured long-context LLM to create a JSONL question set.",
+    )
+    eval_generate_parser.add_argument("corpus", help="Corpus JSON from eval build-corpus.")
+    eval_generate_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing eval_question_generator.",
+    )
+    eval_generate_parser.add_argument(
+        "--question-count",
+        type=int,
+        default=200,
+        help="Requested number of generated questions.",
+    )
+    eval_generate_parser.add_argument(
+        "--profile",
+        choices=("broad", "pinpoint", "mixed"),
+        default="broad",
+        help="Question generation profile. broad is the default recall stress test.",
+    )
+    eval_generate_parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        help="Override eval_question_generator.max_output_tokens for this generation call.",
+    )
+    eval_generate_parser.add_argument("--output", help="Output question set JSONL path.")
+    eval_generate_parser.set_defaults(func=_eval_generate)
+
+    eval_run_parser = eval_subparsers.add_parser(
+        "run",
+        help="Run LoreWeaver retrieval for each question and score chapter-level recall.",
+    )
+    eval_run_parser.add_argument("questions", help="Question set JSONL path.")
+    eval_run_parser.add_argument(
+        "--document-id",
+        help="Document id to retrieve from. Defaults to the latest SQLite document.",
+    )
+    eval_run_parser.add_argument(
+        "--storage-config",
+        default="configs/storage.yaml",
+        help="Path to storage config containing SQLite, Qdrant, and BM25 settings.",
+    )
+    eval_run_parser.add_argument(
+        "--models-config",
+        default="configs/models.yaml",
+        help="Path to provider/model config containing embedding and reranker settings.",
+    )
+    eval_run_parser.add_argument("--output", help="Output predictions JSONL path.")
+    eval_run_parser.add_argument("--limit", type=int, help="Only run the first N questions.")
+    eval_run_parser.add_argument(
+        "--mock-embeddings",
+        action="store_true",
+        help="Use deterministic local mock embeddings for vector query embedding.",
+    )
+    eval_run_parser.add_argument(
+        "--mock-reranker",
+        action="store_true",
+        help="Use deterministic local mock reranking instead of a live reranker API.",
+    )
+    eval_run_parser.add_argument(
+        "--no-reranker",
+        action="store_true",
+        help="Skip reranking and keep Union fused-score ordering.",
+    )
+    eval_run_parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable per-question progress output.",
+    )
+    eval_run_parser.set_defaults(func=_eval_run)
+
+    eval_report_parser = eval_subparsers.add_parser(
+        "report",
+        help="Recompute summary and failure markdown from an eval predictions JSONL.",
+    )
+    eval_report_parser.add_argument("predictions", help="Predictions JSONL from eval run.")
+    eval_report_parser.set_defaults(func=_eval_report)
 
     return parser
 
@@ -1026,6 +1127,113 @@ def _ask(args: argparse.Namespace) -> int:
     return 0 if validation["ok"] else 1
 
 
+def _eval_help(args: argparse.Namespace) -> int:
+    del args
+    print("command: eval")
+    print("subcommands: build-corpus, generate, run, report")
+    print("status: missing_subcommand")
+    return 1
+
+
+def _eval_build_corpus(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    report = build_chapter_corpus(
+        config=config,
+        storage_config=storage_config,
+        document_id=args.document_id,
+        chapter_start=args.chapter_start,
+        chapter_end=args.chapter_end,
+        output_path=args.output,
+    )
+    print(f"run_id: {report['run_id']}")
+    print("command: eval build-corpus")
+    print(f"document_id: {report['document']['document_id']}")
+    print(f"chapter_range: {report['chapter_start']}-{report['chapter_end']}")
+    print(f"chapter_count: {report['chapter_count']}")
+    print(f"char_count: {report['char_count']}")
+    print(f"corpus_path: {report['corpus_path']}")
+    print("status: ok")
+    return 0
+
+
+def _eval_generate(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    models_config = load_config(args.models_config)
+    report = generate_question_set(
+        config=config,
+        models_config=models_config,
+        corpus_path=args.corpus,
+        output_path=args.output,
+        question_count=args.question_count,
+        profile=args.profile,
+        max_output_tokens=args.max_output_tokens,
+    )
+    print(f"run_id: {report['run_id']}")
+    print("command: eval generate")
+    print(f"document_id: {report['document_id']}")
+    print(f"corpus_path: {report['corpus_path']}")
+    print(f"question_set_path: {report['question_set_path']}")
+    print(f"profile: {report['profile']}")
+    print(f"generated_question_count: {report['generated_question_count']}")
+    generator = report["generator"]
+    print(f"generator: {generator['provider']} {generator['model']}")
+    print(f"report_path: {report['report_path']}")
+    print("status: ok")
+    return 0
+
+
+def _eval_run(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    storage_config = _load_storage_config(args.storage_config)
+    models_config = load_config(args.models_config)
+    report = run_eval(
+        config=config,
+        storage_config=storage_config,
+        models_config=models_config,
+        question_set_path=args.questions,
+        document_id=args.document_id,
+        output_path=args.output,
+        limit=args.limit,
+        mock_embeddings=args.mock_embeddings,
+        mock_reranker=args.mock_reranker,
+        no_reranker=args.no_reranker,
+        progress=None if args.no_progress else _build_eval_progress_printer(),
+    )
+    _print_eval_summary(report, command="eval run")
+    return 0
+
+
+def _eval_report(args: argparse.Namespace) -> int:
+    report = summarize_eval_run(args.predictions)
+    _print_eval_summary(report, command="eval report")
+    return 0
+
+
+def _print_eval_summary(report: dict, *, command: str) -> None:
+    metrics = report["metrics"]
+    overall = metrics["overall"]
+    print(f"run_id: {report.get('run_id', '<recomputed>')}")
+    print(f"command: {command}")
+    if report.get("document_id"):
+        print(f"document_id: {report['document_id']}")
+    print(f"question_count: {report['question_count']}")
+    if report.get("predictions_path"):
+        print(f"predictions_path: {report['predictions_path']}")
+    print(f"summary_path: {report['report_path']}")
+    print(f"failures_path: {report['failures_path']}")
+    print(
+        "overall: "
+        f"recall@3={overall['weighted_recall_at_3']:.4f} "
+        f"recall@20={overall['weighted_recall_at_20']:.4f} "
+        f"ndcg@20={overall['ndcg_at_20']:.4f} "
+        f"facet@20={overall['facet_coverage_at_20']:.4f} "
+        f"noise@20={overall['noise_at_20']:.4f} "
+        f"mrr={overall['mrr']:.4f}"
+    )
+    print("status: ok")
+
+
 def _build_extract_progress_printer() -> object:
     totals = {
         "spans": 0,
@@ -1181,6 +1389,40 @@ def _build_extract_progress_printer() -> object:
                 f"failed={payload['failed_count']} "
                 f"cost=CNY {payload['estimated_cost_yuan']:.6f} "
                 f"report={payload['report_path']}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    return progress
+
+
+def _build_eval_progress_printer() -> object:
+    def progress(event: str, payload: dict) -> None:
+        if event == "planned":
+            print(
+                "[eval] "
+                f"run_id={payload['run_id']} "
+                f"document={payload['document_id']} "
+                f"questions={payload['question_count']}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "question_start":
+            print(
+                "[eval] "
+                f"question {payload['index']}/{payload['total']} "
+                f"{payload['question_id']} ...",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event == "question_done":
+            print(
+                "[eval] "
+                f"done {payload['index']}/{payload['total']} "
+                f"{payload['question_id']} "
+                f"recall@20={payload['weighted_recall_at_20']:.3f} "
+                f"facet@20={payload['facet_coverage_at_20']:.3f} "
+                f"mrr={payload['mrr']:.3f}",
                 file=sys.stderr,
                 flush=True,
             )

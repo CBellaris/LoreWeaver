@@ -3,6 +3,18 @@
   "python.terminal.activateEnvironment": true,
   "python.analysis.extraPaths": [
     "${workspaceFolder}"
-  ]
+  ],
+  "oaicopilot.baseUrl": "https://api.deepseek.com",
+  "oaicopilot.models": [
+    {
+        "id": "deepseek-v4-pro",
+        "owned_by": "deepseek",
+        "context_length": 1000000,
+        "max_tokens": 384000,
+        "temperature": 0,
+        "top_p": 1,
+        "include_reasoning_in_request": true
+    }
+]
 }
 

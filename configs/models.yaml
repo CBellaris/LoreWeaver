@@ -4,6 +4,9 @@ providers:
   siliconflow:
     api_key_env: "SILICONFLOW_API_KEY"
     base_url: "https://api.siliconflow.cn/v1"
+  deepseek:
+    api_key_env: "DEEPSEEK_API_KEY"
+    base_url: "https://api.deepseek.com"
 
 models:
   extraction:
@@ -36,3 +39,9 @@ models:
     fallback_name: "BAAI/bge-reranker-v2-m3"
     enabled: false
     timeout_seconds: 30
+  eval_question_generator:
+    provider: "deepseek"
+    name: "deepseek-v4-pro"
+    temperature: 0.2
+    max_output_tokens: 384000
+    json_response_format: false

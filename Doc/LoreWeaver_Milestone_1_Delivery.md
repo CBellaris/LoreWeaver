@@ -1,9 +1,9 @@
 # LoreWeaver Milestone 1 交付文档
 
 版本：v0.1  
-更新日期：2026-04-29  
+更新日期：2026-05-08  
 阶段代号：M1 - 单书建库与证据问答  
-当前实现阶段：M1.8  
+当前实现阶段：M1.9  
 原始详细计划：[LoreWeaver_Milestone_1.md](LoreWeaver_Milestone_1.md)
 
 ---
@@ -25,7 +25,7 @@ txt 样本
   -> 带原文引用的回答
 ```
 
-当前仓库已实现 M1.0 - M1.8，能够通过 CLI 完成单书入库、窗口切分、结构化抽取、索引构建、中心 Span 图、混合召回、证据包组装和带引用问答。M1.9 的系统化人工评估集与坏例复盘仍需补齐。
+当前仓库已实现 M1.0 - M1.9，能够通过 CLI 完成单书入库、窗口切分、结构化抽取、索引构建、中心 Span 图、混合召回、证据包组装、带引用问答，以及章节级召回评估。M1.9 采用超长上下文 LLM 生成问题集与章节级 gold labels，LoreWeaver 输出 span 级召回后聚合为章节排序，并计算 Recall / NDCG / MRR 与坏例报告。
 
 M1 不追求完整世界观分析产品，也不做 Web UI、多用户系统、百万字规模优化或复杂 Agent 调度。它的核心价值是证明“原文坐标 + 可复盘抽取 + 多路召回 + 证据问答”这条工程路线可行。
 
@@ -116,7 +116,7 @@ data/
   normalized/        # normalized 可信坐标文本
   runs/              # SQLite、运行报告、调试记录
   indexes/           # Qdrant 本地索引、BM25 索引
-  eval/              # 后续评估问题集与报告
+  eval/              # 评估语料、问题集、预测与报告
 
 loreweaver/
   ingest/            # 读取、规范化、章节切分、窗口切分
@@ -127,7 +127,7 @@ loreweaver/
   retrieval/         # 图、向量、BM25、Union、Reranker
   evidence/          # 区间扩展、合并、Evidence Pack
   qa/                # 回答生成、引用校验与修复
-  eval/              # M1.9 评估入口
+  eval/              # M1.9 章节级召回评估入口
 
 tests/unit/
   test_m1_1_ingest.py
@@ -138,6 +138,7 @@ tests/unit/
   test_m1_6_retrieval.py
   test_m1_7_evidence.py
   test_m1_8_qa.py
+  test_m1_9_eval.py
 ```
 
 ---
@@ -208,6 +209,24 @@ token_estimate, answer, created_at
 
 每次 `evidence` 或 `ask` 都应落盘 Evidence Pack，回答引用编号必须能映射回 `evidence_blocks`。
 
+### EvalQuestion / EvalPrediction
+
+```text
+EvalQuestion:
+question_id, question, answer, profile, query_type,
+required_facets,
+expected_chapters[{chapter_id, chapter_index, relevance, weight, facet, reason}],
+negative_chapters[{chapter_id, chapter_index, reason}]
+
+EvalPrediction:
+question_id, expected_chapters, predicted_chapters,
+score{weighted_recall_at_k, hit_at_k, ndcg_at_k, core_recall_at_k,
+facet_coverage_at_k, noise_at_k, mrr},
+retrieval_report_path
+```
+
+M1.9 的 gold label 只标到章节级。`eval run` 将 `retrieve` 产出的 span 级 Top-K 按 `chapter_id` 聚合为章节排名，默认使用同章最高 `rerank_score` 作为章节分数，再计算 `weighted_recall_at_1/3/5/10/20`、`hit_at_k`、`ndcg_at_k`、`core_recall_at_k`、`facet_coverage_at_k`、`noise_at_k` 和 `mrr`。Broad profile 会扩大检索候选池与 `rerank_top_k`，用于暴露广域问题的遗失章节和无效章节。
+
 ---
 
 ## 6. 配置与外部依赖
@@ -228,6 +247,7 @@ conda run -n loreweaver python -m pip install -e ".[m1,dev]"
 
 ```text
 SILICONFLOW_API_KEY   # live 抽取、embedding、reranker、QA
+DEEPSEEK_API_KEY      # M1.9 long-context eval question generation
 QDRANT_URL            # 可选；未设置时使用 data/indexes/qdrant
 QDRANT_API_KEY        # 可选
 NEO4J_URI             # 可选
@@ -243,7 +263,8 @@ batch extraction: deepseek-ai/DeepSeek-V3.1-Terminus
 embedding: Qwen/Qwen3-Embedding-0.6B
 reranker: Qwen/Qwen3-Reranker-0.6B
 qa: Pro/deepseek-ai/DeepSeek-V3.2
-provider: SiliconFlow OpenAI-compatible API
+eval question generator: deepseek-v4-pro
+providers: SiliconFlow / DeepSeek OpenAI-compatible API
 ```
 
 关键参数：
@@ -339,6 +360,26 @@ conda run -n loreweaver python -m loreweaver.cli evidence \
 
 conda run -n loreweaver python -m loreweaver.cli ask \
   "塞西尔家族和高文有什么关系？" --mock-embeddings --no-reranker --mock-answer
+```
+
+章节级召回评估：
+
+```bash
+conda run -n loreweaver python -m loreweaver.cli eval build-corpus \
+  --chapter-start 1 --chapter-end 100
+
+conda run -n loreweaver python -m loreweaver.cli eval generate \
+  data/eval/corpora/doc_59331b17113e_ch001_100.json \
+  --profile broad \
+  --question-count 50 \
+  --max-output-tokens 384000
+
+conda run -n loreweaver python -m loreweaver.cli eval run \
+  data/eval/question_sets/doc_59331b17113e_ch001_100_broad_v001.jsonl \
+  --no-reranker
+
+conda run -n loreweaver python -m loreweaver.cli eval report \
+  data/eval/runs/<run_id>_predictions.jsonl
 ```
 
 ---
@@ -460,8 +501,8 @@ Reranker 输入建议：
 
 ## 11. 已知限制与后续补齐
 
-1. **M1.9 尚未完整验收**  
-   需要补 20-30 个手工问题、每题 Evidence Pack 人工评分、至少 3 个坏例复盘。
+1. **M1.9 gold labels 仍是 silver set**  
+   章节级 gold 由超长上下文 LLM 生成，适合做自动回归与坏例筛选；正式验收仍需要对低分样本和低置信样本做人工抽查。
 
 2. **真实回答质量仍需人工评估**  
    M1.8 的 mock answer 只验证链路和引用约束，不代表最终问答质量。切换 live QA 模型后，要检查引用贴合度和证据不足时的保守性。

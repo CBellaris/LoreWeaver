@@ -4,7 +4,7 @@ LoreWeaver is an LLM-driven analysis engine for long-form fictional worlds. The 
 
 ## Current Stage
 
-M1.6 is the hybrid retrieval and reranking stage. The current implementation provides:
+M1.9 is the chapter-level evaluation stage. The current implementation provides:
 
 - Python package skeleton
 - CLI entry point
@@ -18,6 +18,9 @@ M1.6 is the hybrid retrieval and reranking stage. The current implementation pro
 - M1.4 embedding cache in SQLite, local-or-remote Qdrant vector indexing, local BM25 indexing with Chinese-friendly tokenization, and standalone `search-vector` / `search-bm25` debug commands
 - M1.5 high-salience Span inspection, embedding-aware CenterSpanCluster construction with deterministic rule fallback, SQLite graph mirror, optional Neo4j sync, graph reports, and cluster member inspection
 - M1.6 graph + vector + BM25 hybrid retrieval, Union candidate fusion, pluggable reranker interface, SiliconFlow reranker provider, mock/noop reranker fallbacks, retrieval reports, and `query_runs` persistence
+- M1.7 Evidence Pack assembly from retrieval Top-K spans, interval expansion/merge, citation ids, and SQLite persistence
+- M1.8 evidence-grounded QA with citation validation and repair
+- M1.9 long-context LLM question-set generation, chapter-level gold labels, span-to-chapter prediction aggregation, Recall/NDCG/MRR scoring, and failure reports
 
 The first test sample is:
 
@@ -41,6 +44,12 @@ loreweaver --help
 loreweaver status
 ```
 
+Start the local debugging Web UI with live server logs:
+
+```bash
+conda run --no-capture-output -n loreweaver python -m loreweaver.cli web
+```
+
 ## M1 Command Surface
 
 The command surface is intentionally created before the full pipeline is implemented:
@@ -56,10 +65,13 @@ loreweaver spans --top-salience 30
 loreweaver graph
 loreweaver retrieve
 loreweaver ask
-loreweaver eval
+loreweaver eval build-corpus
+loreweaver eval generate
+loreweaver eval run
+loreweaver eval report
 ```
 
-`ingest`, `windows`, `extract`, `index`, `search-vector`, `search-bm25`, `spans`, `graph`, and `retrieve` are implemented; later M1 commands still report their run id and placeholder status.
+`ingest`, `windows`, `extract`, `index`, `search-vector`, `search-bm25`, `spans`, `graph`, `retrieve`, `evidence`, `ask`, and `eval` are implemented.
 
 For a paid API smoke test, set `SILICONFLOW_API_KEY` in your environment and start with a small limit:
 
@@ -90,6 +102,17 @@ python3 -m loreweaver.cli graph --no-neo4j --no-embeddings
 python3 -m loreweaver.cli graph --list
 python3 -m loreweaver.cli retrieve "塞西尔家族为什么衰落？" --mock-embeddings --mock-reranker
 ```
+
+For M1.9 chapter-level recall evaluation, build a long-context corpus, generate a JSONL question set with the configured OpenAI-compatible eval model, then run LoreWeaver retrieval against that set:
+
+```bash
+python3 -m loreweaver.cli eval build-corpus --chapter-start 1 --chapter-end 100
+python3 -m loreweaver.cli eval generate data/eval/corpora/doc_59331b17113e_ch001_100.json --profile broad --question-count 50 --max-output-tokens 384000
+python3 -m loreweaver.cli eval run data/eval/question_sets/doc_59331b17113e_ch001_100_broad_v001.jsonl --no-reranker
+python3 -m loreweaver.cli eval report data/eval/runs/<run_id>_predictions.jsonl
+```
+
+Set `DEEPSEEK_API_KEY` to use the default `deepseek-v4-pro` eval question generator.
 
 ## Data Directories
 

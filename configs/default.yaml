@@ -56,6 +56,23 @@ retrieval:
   union_max_candidates: 80
   rerank_top_k: 15
 
+eval:
+  retrieval_profiles:
+    broad:
+      graph_cluster_top_k: 8
+      graph_span_per_cluster: 20
+      vector_top_k: 80
+      bm25_top_k: 80
+      union_max_candidates: 200
+      rerank_top_k: 50
+    mixed:
+      graph_cluster_top_k: 8
+      graph_span_per_cluster: 20
+      vector_top_k: 80
+      bm25_top_k: 80
+      union_max_candidates: 200
+      rerank_top_k: 50
+
 graph:
   cluster_count: 4
   members_per_cluster: 8
@@ -77,11 +94,11 @@ indexing:
     include_located_text: false
 
 evidence:
-  pre_context_chars: 300
-  post_context_chars: 500
+  pre_context_chars: 200
+  post_context_chars: 300
   merge_gap_chars: 500
-  max_evidence_chars: 40000
-  max_blocks: 12
+  max_evidence_chars: 50000
+  max_blocks: 16
 
 qa:
   temperature: 0
