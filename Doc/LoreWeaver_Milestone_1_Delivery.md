@@ -176,7 +176,7 @@ window_start, window_end, text, uncovered_text
 
 ```text
 span_id, document_id, chapter_id, window_id, span_index_in_window,
-micro_topic, span_type, micro_summary, entities, topics,
+span_type, micro_summary, entities, topics,
 salience_score, start_anchor_quote, end_anchor_quote, key_quote,
 span_start_idx, span_end_idx, located_text,
 locator_confidence, locator_status, created_at
@@ -488,7 +488,6 @@ Reranker 输入建议：
 
 ```text
 章节：<chapter_title>
-小话题：<micro_topic>
 摘要：<micro_summary>
 实体：<entities>
 主题：<topics>

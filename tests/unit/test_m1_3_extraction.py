@@ -11,6 +11,8 @@ from loreweaver.extraction.extractor import (
     _apply_batch_outputs,
     _batch_output_from_line,
     _build_batch_request_line,
+    _repair_failed_spans_with_relaxed_bounds,
+    _resolve_repair_span_bounds,
     _results_from_raw_window_output,
     build_uncovered_text,
     estimate_cost,
@@ -59,6 +61,18 @@ class SequencedJsonClient:
 
 
 class M13ExtractionTests(unittest.TestCase):
+    def test_repair_span_bounds_default_to_relaxed_range(self) -> None:
+        self.assertEqual(
+            _resolve_repair_span_bounds(span_chars_min=None, span_chars_max=None),
+            (1, 2000),
+        )
+
+    def test_repair_span_bounds_validate_explicit_values(self) -> None:
+        with self.assertRaises(ValueError):
+            _resolve_repair_span_bounds(span_chars_min=0, span_chars_max=2000)
+        with self.assertRaises(ValueError):
+            _resolve_repair_span_bounds(span_chars_min=2000, span_chars_max=1)
+
     def test_locator_handles_exact_normalized_and_fuzzy_quotes(self) -> None:
         window = CandidateWindow(
             window_id="w1",
@@ -115,6 +129,207 @@ class M13ExtractionTests(unittest.TestCase):
         self.assertLessEqual(relationship.start_idx, location.start_idx)
         self.assertGreaterEqual(relationship.end_idx, location.end_idx)
 
+    def test_anchor_locator_rejects_out_of_range_intervals(self) -> None:
+        short_text = "赫蒂探测到魔力反应。"
+        short_window = CandidateWindow(
+            window_id="w_short",
+            document_id="doc",
+            chapter_id="ch1",
+            window_index=1,
+            window_start=10,
+            window_end=10 + len(short_text),
+            text=short_text,
+        )
+        long_text = "起点。" + ("中间说明。" * 20) + "终点。"
+        long_window = CandidateWindow(
+            window_id="w_long",
+            document_id="doc",
+            chapter_id="ch1",
+            window_index=2,
+            window_start=100,
+            window_end=100 + len(long_text),
+            text=long_text,
+        )
+
+        short_result = locate_span_anchors(
+            short_window,
+            start_anchor_quote="赫蒂探测",
+            end_anchor_quote="魔力反应",
+            min_span_chars=30,
+            max_span_chars=800,
+        )
+        long_result = locate_span_anchors(
+            long_window,
+            start_anchor_quote="起点",
+            end_anchor_quote="终点",
+            min_span_chars=4,
+            max_span_chars=20,
+        )
+
+        self.assertEqual(short_result.status, "failed")
+        self.assertIn("outside", short_result.failure_reason or "")
+        self.assertEqual(long_result.status, "failed")
+        self.assertIn("outside", long_result.failure_reason or "")
+
+    def test_repair_failed_accepts_existing_span_with_relaxed_bounds(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            text = "赫蒂探测到魔力反应。"
+            window = CandidateWindow(
+                window_id="doc_ch0001_win0001",
+                document_id="doc",
+                chapter_id="doc_ch0001",
+                window_index=1,
+                window_start=0,
+                window_end=len(text),
+                text=text,
+            )
+            raw_output = json.dumps(
+                {
+                    "spans": [
+                        {
+                            "span_type": "event",
+                            "micro_summary": "赫蒂探测到魔力反应。",
+                            "entities": ["赫蒂"],
+                            "topics": ["魔力"],
+                            "salience_score": 0.5,
+                            "start_anchor_quote": "赫蒂探测",
+                            "end_anchor_quote": "魔力反应",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            results = _results_from_raw_window_output(
+                window,
+                raw_output=raw_output,
+                attempts=1,
+                usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+                max_spans_per_window=12,
+                anchor_min_chars=4,
+                anchor_max_chars=80,
+                target_span_chars_min=30,
+                target_span_chars_max=800,
+                store_located_text=True,
+                fuzzy_threshold=0.86,
+            )
+            self.assertEqual(results[0].status, "failed")
+
+            store = SQLiteStore(Path(tmpdir) / "test.sqlite3")
+            store.initialize()
+            store.initialize_extraction_tables()
+            store.upsert_span(results[0].span)
+            store.insert_extraction_failure(
+                window_id=window.window_id,
+                span_id=results[0].span.span_id,
+                stage="locator",
+                reason=results[0].failure_reason or "failed",
+                attempts=1,
+                raw_output=raw_output,
+            )
+
+            summary = _repair_failed_spans_with_relaxed_bounds(
+                store=store,
+                document_id=window.document_id,
+                windows=[window],
+                min_span_chars=1,
+                max_span_chars=800,
+                anchor_min_chars=4,
+                anchor_max_chars=80,
+                store_located_text=True,
+                store_uncovered_text=True,
+                fuzzy_threshold=0.86,
+                progress=None,
+            )
+
+            repaired = store.get_span(results[0].span.span_id)
+            self.assertEqual(summary["repaired_count"], 1)
+            self.assertEqual(repaired.locator_status, "located")
+            self.assertIn("魔力反应", repaired.located_text)
+
+    def test_extract_window_retries_whole_window_for_anchor_lookup_failures(self) -> None:
+        text = "开头信息。第二条线索就在这里。结尾信息。"
+        window = CandidateWindow(
+            window_id="doc_ch0001_win0001",
+            document_id="doc",
+            chapter_id="doc_ch0001",
+            window_index=1,
+            window_start=0,
+            window_end=len(text),
+            text=text,
+        )
+        first_payload = {
+            "spans": [
+                {
+                    "span_type": "event",
+                    "micro_summary": "开头信息被记录。",
+                    "entities": [],
+                    "topics": ["开头"],
+                    "salience_score": 0.4,
+                    "start_anchor_quote": "开头信息",
+                    "end_anchor_quote": "开头信息",
+                },
+                {
+                    "span_type": "mystery_clue",
+                    "micro_summary": "第二条线索出现。",
+                    "entities": [],
+                    "topics": ["线索"],
+                    "salience_score": 0.6,
+                    "start_anchor_quote": "不存在的起点",
+                    "end_anchor_quote": "结尾信息",
+                },
+            ]
+        }
+        retry_payload = {
+            "spans": [
+                {
+                    "span_type": "event",
+                    "micro_summary": "开头信息被记录。",
+                    "entities": [],
+                    "topics": ["开头"],
+                    "salience_score": 0.4,
+                    "start_anchor_quote": "开头信息",
+                    "end_anchor_quote": "开头信息",
+                },
+                {
+                    "span_type": "mystery_clue",
+                    "micro_summary": "第二条线索出现。",
+                    "entities": [],
+                    "topics": ["线索"],
+                    "salience_score": 0.6,
+                    "start_anchor_quote": "第二条线索",
+                    "end_anchor_quote": "结尾信息",
+                },
+            ]
+        }
+        client = SequencedJsonClient(
+            [
+                json.dumps(first_payload, ensure_ascii=False),
+                json.dumps(retry_payload, ensure_ascii=False),
+            ]
+        )
+
+        results = extract_window(
+            window,
+            client=client,
+            model="mock",
+            temperature=0,
+            retry_policy=RetryPolicy(max_retries=1),
+            min_spans_per_window=1,
+            max_spans_per_window=12,
+            anchor_min_chars=4,
+            anchor_max_chars=80,
+            target_span_chars_min=4,
+            target_span_chars_max=80,
+            store_located_text=True,
+            fuzzy_threshold=0.86,
+            token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+        )
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(result.status == "located" for result in results))
+
     def test_extract_window_trims_overlong_anchors_for_location(self) -> None:
         text = (
             "随后她回过头，打量着身边仅剩的几个人：三名士兵正在举着火把警戒四周，"
@@ -134,7 +349,6 @@ class M13ExtractionTests(unittest.TestCase):
             {
                 "spans": [
                     {
-                        "micro_topic": "幸存者队伍成员状态",
                         "span_type": "scene_action",
                         "micro_summary": "瑞贝卡清点身边幸存者，确认当前只剩七人。",
                         "entities": ["瑞贝卡", "拜伦骑士", "赫蒂姑妈", "士兵"],
@@ -192,7 +406,6 @@ class M13ExtractionTests(unittest.TestCase):
             {
                 "spans": [
                     {
-                        "micro_topic": "主角发现古门",
                         "span_type": "event",
                         "micro_summary": "主角发现一扇古门。",
                         "entities": ["主角", "古门"],
@@ -202,7 +415,6 @@ class M13ExtractionTests(unittest.TestCase):
                         "end_anchor_quote": "主角发现古门",
                     },
                     {
-                        "micro_topic": "古门显出符文",
                         "span_type": "mystery_clue",
                         "micro_summary": "古门发光并显出符文。",
                         "entities": ["古门", "符文"],
@@ -323,7 +535,6 @@ class M13ExtractionTests(unittest.TestCase):
         raw_payload = {
             "spans": [
                 {
-                    "micro_topic": "陌生大厅苏醒",
                     "span_type": "event",
                     "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
                     "entities": ["高文", "魔法阵"],
@@ -370,7 +581,7 @@ class M13ExtractionTests(unittest.TestCase):
         self.assertEqual(results[0].status, "located")
         self.assertIn("魔法阵", results[0].span.located_text)
 
-    def test_batch_parse_failure_retries_window_live(self) -> None:
+    def test_batch_parse_failure_is_queued_for_later_retry(self) -> None:
         with TemporaryDirectory() as tmpdir:
             text = "高文醒来后发现自己站在陌生大厅中央，墙上的魔法阵仍在微光闪烁。"
             window = CandidateWindow(
@@ -385,7 +596,6 @@ class M13ExtractionTests(unittest.TestCase):
             bad_payload = {
                 "spans": [
                     {
-                        "micro_topic": "陌生大厅苏醒",
                         "span_type": "event",
                         "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
                         "entities": ["高文", "魔法阵"],
@@ -393,20 +603,6 @@ class M13ExtractionTests(unittest.TestCase):
                         "salience_score": 0.6,
                         "start_anchor_quote": "高文醒来后发现自己站在陌生大厅中央",
                         "end_quote": "墙上的魔法阵仍在微光闪烁",
-                    }
-                ]
-            }
-            retry_payload = {
-                "spans": [
-                    {
-                        "micro_topic": "陌生大厅苏醒",
-                        "span_type": "event",
-                        "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
-                        "entities": ["高文", "魔法阵"],
-                        "topics": ["苏醒", "魔法"],
-                        "salience_score": 0.6,
-                        "start_anchor_quote": "高文醒来后发现自己站在陌生大厅中央",
-                        "end_anchor_quote": "墙上的魔法阵仍在微光闪烁",
                     }
                 ]
             }
@@ -428,20 +624,14 @@ class M13ExtractionTests(unittest.TestCase):
                     },
                 }
             )
-            client = SequencedJsonClient([json.dumps(retry_payload, ensure_ascii=False)])
             store = SQLiteStore(Path(tmpdir) / "test.sqlite3")
             store.initialize()
             store.initialize_extraction_tables()
 
-            results = _apply_batch_outputs(
+            outcome = _apply_batch_outputs(
                 store=store,
                 windows=[window],
                 outputs=[output],
-                client=client,
-                model="mock",
-                temperature=0,
-                retry_policy=RetryPolicy(max_retries=0),
-                min_spans_per_window=1,
                 max_spans_per_window=12,
                 anchor_min_chars=4,
                 anchor_max_chars=80,
@@ -451,13 +641,90 @@ class M13ExtractionTests(unittest.TestCase):
                 store_uncovered_text=True,
                 fuzzy_threshold=0.86,
                 token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+                prior_usage_by_window={},
                 progress=None,
             )
 
-            self.assertEqual(client.calls, 1)
-            self.assertEqual(results[0].status, "located")
-            self.assertIn("魔法阵", results[0].span.located_text)
-            self.assertEqual(results[0].usage["total_tokens"], 39)
+            self.assertEqual(outcome.results, [])
+            self.assertEqual([item.window_id for item in outcome.retry_windows], [window.window_id])
+            self.assertIn(window.window_id, outcome.retry_reasons)
+            self.assertEqual(outcome.retry_usage_by_window[window.window_id]["total_tokens"], 24)
+
+    def test_batch_locator_failure_is_queued_for_later_retry(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            text = "高文醒来后发现自己站在陌生大厅中央，墙上的魔法阵仍在微光闪烁。"
+            window = CandidateWindow(
+                window_id="doc_ch0001_win0001",
+                document_id="doc",
+                chapter_id="doc_ch0001",
+                window_index=1,
+                window_start=0,
+                window_end=len(text),
+                text=text,
+            )
+            bad_locator_payload = {
+                "spans": [
+                    {
+                        "span_type": "event",
+                        "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                        "entities": ["高文", "魔法阵"],
+                        "topics": ["苏醒", "魔法"],
+                        "salience_score": 0.6,
+                        "start_anchor_quote": "不存在的起点",
+                        "end_anchor_quote": "墙上的魔法阵仍在微光闪烁",
+                    }
+                ]
+            }
+            output = _batch_output_from_line(
+                {
+                    "custom_id": window.window_id,
+                    "response": {
+                        "status_code": 200,
+                        "body": {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": json.dumps(
+                                            bad_locator_payload,
+                                            ensure_ascii=False,
+                                        )
+                                    }
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 17,
+                                "completion_tokens": 19,
+                                "total_tokens": 36,
+                            },
+                        },
+                    },
+                }
+            )
+            store = SQLiteStore(Path(tmpdir) / "test.sqlite3")
+            store.initialize()
+            store.initialize_extraction_tables()
+
+            outcome = _apply_batch_outputs(
+                store=store,
+                windows=[window],
+                outputs=[output],
+                max_spans_per_window=12,
+                anchor_min_chars=4,
+                anchor_max_chars=80,
+                target_span_chars_min=4,
+                target_span_chars_max=120,
+                store_located_text=True,
+                store_uncovered_text=True,
+                fuzzy_threshold=0.86,
+                token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+                prior_usage_by_window={},
+                progress=None,
+            )
+
+            self.assertEqual(outcome.results, [])
+            self.assertEqual([item.window_id for item in outcome.retry_windows], [window.window_id])
+            self.assertEqual(outcome.retry_reasons[window.window_id], "start anchor not found")
+            self.assertEqual(outcome.retry_usage_by_window[window.window_id]["total_tokens"], 36)
 
     def test_extraction_pipeline_persists_spans_failures_and_report(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -571,7 +838,6 @@ class M13ExtractionTests(unittest.TestCase):
             self.assertEqual(report_count, 1)
             self.assertGreaterEqual(candidate_count, 4)
             self.assertGreaterEqual(uncovered_count, 1)
-            self.assertTrue(all(span.micro_topic for span in spans))
             self.assertTrue(all(span.micro_summary for span in spans))
             self.assertTrue(all(span.located_text for span in spans))
 

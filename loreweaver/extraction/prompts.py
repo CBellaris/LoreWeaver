@@ -30,13 +30,12 @@ def build_extraction_messages(
     schema_hint = {
         "spans": [
             {
-                "micro_topic": "一个小话题标题，禁止写成本章总结",
                 "span_type": (
                     "dialogue_exchange | relationship_signal | location_lore | "
                     "faction_lore | power_rule | event | mystery_clue | "
                     "object_lore | scene_action | other"
                 ),
-                "micro_summary": "1-2句中文摘要，只说明这个小 Span 的信息点",
+                "micro_summary": "1-2句中文摘要，只说明这个小 Span 的信息点；需自包含主体、动作或设定点",
                 "entities": ["人物、地点、势力、物品、特殊术语；没有则为空数组"],
                 "topics": ["抽象主题，例如人物关系、地理线索、力量体系；没有则为空数组"],
                 "salience_score": "0到1之间的小数，表示世界观/剧情信息密度",
@@ -73,6 +72,7 @@ def build_extraction_messages(
         f"- start_anchor_quote 与 end_anchor_quote 是定位锚点，不需要覆盖完整 Span；建议 {anchor_min_chars}-50 字符，最长不要超过 {anchor_max_chars} 字符，且必须逐字来自窗口。\n"
         "- start_anchor_quote 应靠近 Span 起点，end_anchor_quote 应靠近 Span 终点，二者顺序必须正确。\n"
         "- key_quote 只表达核心证据，不承担完整定位；不要把整段 Span 塞进 key_quote。\n\n"
+        "- micro_summary 必须能独立表达 Span 核心信息，不要依赖标题字段补充主语或对象。\n\n"
         "拆分示例：如果 A 对 B 说“闲聊内容。XX森林你知道吗？那里......”，应拆为：\n"
         "1. A 与 B 的对话互动 Span，覆盖 A 开口到该轮对话结束；\n"
         "2. XX森林设定 Span，只覆盖关于 XX森林的描述；\n"

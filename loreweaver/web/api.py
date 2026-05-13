@@ -70,6 +70,28 @@ def build_api_router(inspector: DebugInspector, jobs: JobManager) -> APIRouter:
     def span_detail(span_id: str) -> Any:
         return handle(lambda: inspector.span_detail(span_id))
 
+    @router.get("/span-review")
+    def span_review(
+        document_id: str | None = None,
+        window_range: str = "",
+        with_spans_only: bool = False,
+        min_gap_chars: int = 0,
+        limit: int = 200,
+    ) -> Any:
+        return handle(
+            lambda: inspector.span_review(
+                document_id=document_id,
+                window_range=window_range,
+                with_spans_only=with_spans_only,
+                min_gap_chars=min_gap_chars,
+                limit=limit,
+            )
+        )
+
+    @router.get("/span-review/{window_id}")
+    def span_review_window(window_id: str) -> Any:
+        return handle(lambda: inspector.span_review_window(window_id))
+
     @router.get("/graph")
     def graph(document_id: str | None = None) -> Any:
         return handle(lambda: inspector.graph_summary(document_id=document_id))

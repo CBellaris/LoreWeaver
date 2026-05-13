@@ -34,11 +34,10 @@ SPAN_TYPES = {
 if BaseModel is not None:
 
     class SpanCandidatePayload(BaseModel):
-        """LLM-facing payload for one micro-topic Span candidate."""
+        """LLM-facing payload for one Span candidate."""
 
         model_config = ConfigDict(extra="forbid")
 
-        micro_topic: str = Field(min_length=1, max_length=120)
         span_type: str = Field(default="other", max_length=40)
         micro_summary: str = Field(min_length=1, max_length=500)
         entities: list[str] = Field(default_factory=list, max_length=30)
@@ -58,7 +57,6 @@ if BaseModel is not None:
             return data
 
         @field_validator(
-            "micro_topic",
             "span_type",
             "micro_summary",
             "start_anchor_quote",
@@ -70,7 +68,7 @@ if BaseModel is not None:
         def _strip_text(cls, value: str) -> str:
             return value.strip()
 
-        @field_validator("micro_topic", "micro_summary", "start_anchor_quote", "end_anchor_quote")
+        @field_validator("micro_summary", "start_anchor_quote", "end_anchor_quote")
         @classmethod
         def _require_text(cls, value: str) -> str:
             if not value:
@@ -128,7 +126,6 @@ else:
     class SpanCandidatePayload:
         """Small validation fallback used before optional dependencies are installed."""
 
-        micro_topic: str
         span_type: str = "other"
         micro_summary: str = ""
         entities: list[str] = field(default_factory=list)
@@ -140,12 +137,9 @@ else:
         overlap_reason: str = ""
 
         def __post_init__(self) -> None:
-            micro_topic = self.micro_topic.strip()
             micro_summary = self.micro_summary.strip()
             start_anchor = self.start_anchor_quote.strip()
             end_anchor = self.end_anchor_quote.strip()
-            if not micro_topic:
-                raise ValueError("micro_topic must not be blank")
             if not micro_summary:
                 raise ValueError("micro_summary must not be blank")
             if not start_anchor:
@@ -158,7 +152,6 @@ else:
             span_type = self.span_type.strip() or "other"
             if span_type not in SPAN_TYPES:
                 span_type = "other"
-            object.__setattr__(self, "micro_topic", micro_topic)
             object.__setattr__(self, "span_type", span_type)
             object.__setattr__(self, "micro_summary", micro_summary)
             object.__setattr__(self, "salience_score", score)
@@ -174,7 +167,6 @@ else:
             if not isinstance(data, dict):
                 raise ValueError("span candidate must be a JSON object")
             return cls(
-                micro_topic=str(data.get("micro_topic", "")),
                 span_type=str(data.get("span_type", "other")),
                 micro_summary=str(data.get("micro_summary", data.get("summary", ""))),
                 entities=list(data.get("entities", [])),
@@ -189,7 +181,6 @@ else:
         def model_dump(self, mode: str = "json") -> dict[str, Any]:
             del mode
             return {
-                "micro_topic": self.micro_topic,
                 "span_type": self.span_type,
                 "micro_summary": self.micro_summary,
                 "entities": self.entities,

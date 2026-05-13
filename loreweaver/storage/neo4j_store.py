@@ -90,7 +90,6 @@ def _replace_graph_tx(
             MERGE (s:LoreWeaverSpan {span_id: $span_id})
             SET s.document_id = $document_id,
                 s.chapter_id = $chapter_id,
-                s.micro_topic = $micro_topic,
                 s.span_type = $span_type,
                 s.micro_summary = $micro_summary,
                 s.span_start_idx = $span_start_idx,
@@ -99,7 +98,6 @@ def _replace_graph_tx(
             span_id=span.span_id,
             document_id=span.document_id,
             chapter_id=span.chapter_id,
-            micro_topic=span.micro_topic,
             span_type=span.span_type,
             micro_summary=span.micro_summary,
             span_start_idx=span.span_start_idx,

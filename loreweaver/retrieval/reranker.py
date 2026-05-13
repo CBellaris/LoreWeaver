@@ -166,7 +166,6 @@ def build_rerank_text(
         part
         for part in [
             f"章节：{chapter.chapter_title if chapter else span.chapter_id}",
-            f"小话题：{span.micro_topic}",
             f"摘要：{span.micro_summary}",
             f"实体：{', '.join(span.entities)}",
             f"主题：{', '.join(span.topics)}",

@@ -173,7 +173,6 @@ def _top_result(
         "source_scores": {},
         "normalized_scores": {},
         "cluster_ids": cluster_ids or [],
-        "micro_topic": span_id,
         "micro_summary": span_id,
     }
 

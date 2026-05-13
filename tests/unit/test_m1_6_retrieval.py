@@ -170,7 +170,7 @@ def _spans(document_id: str) -> list[Span]:
         ),
     ]
     spans: list[Span] = []
-    for index, (span_id, chapter_id, topic, summary, entities, topics) in enumerate(rows):
+    for index, (span_id, chapter_id, _topic, summary, entities, topics) in enumerate(rows):
         spans.append(
             Span(
                 span_id=span_id,
@@ -180,7 +180,6 @@ def _spans(document_id: str) -> list[Span]:
                 span_index_in_window=index,
                 window_start=index * 100,
                 window_end=index * 100 + 100,
-                micro_topic=topic,
                 span_type="faction" if "cecil" in span_id else "setting",
                 micro_summary=summary,
                 entities=entities,

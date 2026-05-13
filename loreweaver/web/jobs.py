@@ -14,6 +14,9 @@ from typing import Any
 
 from loreweaver.config import load_config
 from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
+from loreweaver.eval.corpus import build_chapter_corpus
+from loreweaver.eval.generator import generate_question_set
+from loreweaver.eval.runner import run_eval, summarize_eval_run
 from loreweaver.extraction.extractor import extract_document_windows, list_extraction_windows
 from loreweaver.graph.center_span import build_m15_graph, list_graph_clusters
 from loreweaver.ingest.pipeline import ingest_text
@@ -173,6 +176,9 @@ def command_specs() -> dict[str, Any]:
                 "batch_poll_interval",
                 "batch_timeout",
                 "batch_completion_window",
+                "repair_failed",
+                "span_chars_min",
+                "span_chars_max",
             ],
         },
         "index": {"label": "Index", "fields": ["document_id", "limit", "mock_embeddings"]},
@@ -198,6 +204,30 @@ def command_specs() -> dict[str, Any]:
         "ask": {
             "label": "Ask",
             "fields": ["question", "document_id", "mock_embeddings", "mock_reranker", "no_reranker", "mock_answer"],
+        },
+        "eval-build-corpus": {
+            "label": "Eval Build Corpus",
+            "fields": ["document_id", "chapter_start", "chapter_end", "output"],
+        },
+        "eval-generate": {
+            "label": "Eval Generate",
+            "fields": ["corpus", "question_count", "profile", "max_output_tokens", "output"],
+        },
+        "eval-run": {
+            "label": "Eval Run",
+            "fields": [
+                "questions",
+                "document_id",
+                "output",
+                "limit",
+                "mock_embeddings",
+                "mock_reranker",
+                "no_reranker",
+            ],
+        },
+        "eval-report": {
+            "label": "Eval Report",
+            "fields": ["predictions"],
         },
     }
 
@@ -300,6 +330,9 @@ def _dispatch_inner(
             batch_poll_interval_seconds=float(payload.get("batch_poll_interval") or 30.0),
             batch_timeout_seconds=_optional_float(payload.get("batch_timeout")),
             batch_completion_window=str(payload.get("batch_completion_window") or "24h"),
+            repair_failed=bool(payload.get("repair_failed")),
+            span_chars_min=_optional_int(payload.get("span_chars_min")),
+            span_chars_max=_optional_int(payload.get("span_chars_max")),
             progress=progress,
         )
     if command == "index":
@@ -401,6 +434,41 @@ def _dispatch_inner(
             mock_answer=bool(payload.get("mock_answer")),
             progress=progress,
         )
+    if command == "eval-build-corpus":
+        return build_chapter_corpus(
+            config=config,
+            storage_config=storage_config,
+            document_id=_optional_str(payload.get("document_id")),
+            chapter_start=int(payload.get("chapter_start") or 1),
+            chapter_end=int(payload.get("chapter_end") or 100),
+            output_path=_optional_str(payload.get("output")),
+        )
+    if command == "eval-generate":
+        return generate_question_set(
+            config=config,
+            models_config=models_config,
+            corpus_path=_required(payload, "corpus"),
+            output_path=_optional_str(payload.get("output")),
+            question_count=int(payload.get("question_count") or 200),
+            profile=str(payload.get("profile") or "broad"),
+            max_output_tokens=_optional_int(payload.get("max_output_tokens")),
+        )
+    if command == "eval-run":
+        return run_eval(
+            config=config,
+            storage_config=storage_config,
+            models_config=models_config,
+            question_set_path=_required(payload, "questions"),
+            document_id=_optional_str(payload.get("document_id")),
+            output_path=_optional_str(payload.get("output")),
+            limit=_optional_int(payload.get("limit")),
+            mock_embeddings=bool(payload.get("mock_embeddings")),
+            mock_reranker=bool(payload.get("mock_reranker")),
+            no_reranker=bool(payload.get("no_reranker")),
+            progress=progress,
+        )
+    if command == "eval-report":
+        return summarize_eval_run(_required(payload, "predictions"))
     raise ValueError(f"Unsupported command: {command}")
 
 
@@ -443,7 +511,7 @@ def _env_overrides(payload: dict[str, Any]) -> dict[str, str]:
     raw_env = payload.get("_env")
     if not isinstance(raw_env, dict):
         return {}
-    allowed = {"SILICONFLOW_API_KEY", "OPENAI_API_KEY"}
+    allowed = {"DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "OPENAI_API_KEY"}
     overrides = {}
     for key, value in raw_env.items():
         name = str(key)

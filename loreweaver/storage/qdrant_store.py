@@ -185,7 +185,6 @@ def _payload_for_record(record: VectorRecord) -> dict[str, Any]:
         "document_id": span.document_id,
         "chapter_id": span.chapter_id,
         "window_id": span.window_id,
-        "micro_topic": span.micro_topic,
         "span_type": span.span_type,
         "micro_summary": span.micro_summary,
         "entities": span.entities,

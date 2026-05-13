@@ -226,6 +226,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default="24h",
         help="Batch completion window passed to the provider.",
     )
+    extract_parser.add_argument(
+        "--repair-failed",
+        action="store_true",
+        help=(
+            "Re-run only windows that currently have failed extraction/locator spans. "
+            "This re-extracts the whole selected window."
+        ),
+    )
+    extract_parser.add_argument(
+        "--span-chars-min",
+        type=int,
+        help="When used with --repair-failed, first accept failed spans using this relaxed min length. Defaults to 1.",
+    )
+    extract_parser.add_argument(
+        "--span-chars-max",
+        type=int,
+        help="When used with --repair-failed, first accept failed spans using this relaxed max length. Defaults to 2000.",
+    )
     extract_parser.set_defaults(func=_extract)
 
     index_parser = subparsers.add_parser(
@@ -816,6 +834,9 @@ def _extract(args: argparse.Namespace) -> int:
             batch_poll_interval_seconds=args.batch_poll_interval,
             batch_timeout_seconds=args.batch_timeout,
             batch_completion_window=args.batch_completion_window,
+            repair_failed=args.repair_failed,
+            span_chars_min=args.span_chars_min,
+            span_chars_max=args.span_chars_max,
             progress=progress,
         )
     finally:
@@ -957,7 +978,6 @@ def _spans(args: argparse.Namespace) -> int:
             f"chapter_id={span.chapter_id} "
             f"range={span.span_start_idx}-{span.span_end_idx}"
         )
-        print(f"   topic: {span.micro_topic}")
         print(f"   summary: {_truncate(span.micro_summary, 120)}")
         if span.entities:
             print(f"   entities: {', '.join(span.entities[:8])}")
@@ -1318,7 +1338,6 @@ def _print_search_results(results: list[dict]) -> None:
             f"chapter_id={result.get('chapter_id')} "
             f"range={result.get('span_start_idx')}-{result.get('span_end_idx')}"
         )
-        print(f"   topic: {result.get('micro_topic')}")
         print(f"   summary: {summary}")
         entities = result.get("entities") or []
         if entities:
@@ -1373,9 +1392,9 @@ def _print_graph_clusters(clusters: list[dict]) -> None:
                     f"chapter={components.get('chapter', 0):.3f} "
                     f"salience={components.get('salience', 0):.3f}"
                 )
-            topic = member.get("micro_topic")
-            if topic:
-                print(f"     topic: {_truncate(topic, 100)}")
+            summary = member.get("micro_summary")
+            if summary:
+                print(f"     summary: {_truncate(summary, 100)}")
 
 
 def _print_retrieve_results(results: list[dict]) -> None:
@@ -1388,7 +1407,6 @@ def _print_retrieve_results(results: list[dict]) -> None:
             f"chapter_id={result['chapter_id']} "
             f"range={result['span_start_idx']}-{result['span_end_idx']}"
         )
-        print(f"   topic: {result['micro_topic']}")
         print(f"   summary: {_truncate(result['micro_summary'], 140)}")
         entities = result.get("entities") or []
         if entities:

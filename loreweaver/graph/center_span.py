@@ -354,7 +354,7 @@ def build_center_span_clusters(
 
 def classify_cluster_type(span: Span) -> str:
     span_type = span.span_type.lower()
-    combined = " ".join([span.micro_topic, span.micro_summary, *span.topics, *span.entities])
+    combined = " ".join([span.micro_summary, *span.topics, *span.entities])
     if span_type == "location_lore" or _contains_any(combined, ("地点", "地理", "城堡", "遗迹")):
         return "location"
     if span_type == "faction_lore" or _contains_any(combined, ("势力", "家族", "王国", "贵族")):
@@ -533,14 +533,14 @@ def _cluster_name(cluster_type: str, center: Span, members: list[Span]) -> str:
         return f"{label}：{representative_entity}"
     if topic_counts:
         return f"{label}：{topic_counts.most_common(1)[0][0]}"
-    return f"{label}：{center.micro_topic}"
+    return f"{label}：{center.micro_summary}"
 
 
 def _cluster_summary(cluster_type: str, center: Span, members: list[Span]) -> str:
     topics = Counter(topic for span in members for topic in span.topics).most_common(3)
-    topic_text = "、".join(topic for topic, _ in topics) if topics else center.micro_topic
+    topic_text = "、".join(topic for topic, _ in topics) if topics else center.micro_summary
     label = CLUSTER_TYPE_LABELS.get(cluster_type, cluster_type)
-    return f"{label}聚合，以中心 Span「{center.micro_topic}」为锚点，成员主要覆盖：{topic_text}。"
+    return f"{label}聚合，以中心 Span「{center.micro_summary}」为锚点，成员主要覆盖：{topic_text}。"
 
 
 def _cluster_confidence(members: list[MemberCandidate]) -> float:
@@ -606,7 +606,7 @@ def _build_report(
                         "score": member.score,
                         "component_scores": member.component_scores,
                         "reasons": member.reasons,
-                        "micro_topic": member.span.micro_topic,
+                        "micro_summary": member.span.micro_summary,
                         "span_type": member.span.span_type,
                         "chapter_id": member.span.chapter_id,
                         "range": [member.span.span_start_idx, member.span.span_end_idx],
@@ -807,7 +807,7 @@ def _lexical_overlap(center: Span, span: Span) -> int:
 
 
 def _span_text(span: Span) -> str:
-    return "\n".join([span.micro_topic, span.micro_summary, *span.entities, *span.topics])
+    return "\n".join([span.micro_summary, *span.entities, *span.topics])
 
 
 def _chapter_number(chapter_id: str) -> int:
@@ -859,7 +859,7 @@ def _span_preview(span: Span) -> dict[str, Any]:
     return {
         "span_id": span.span_id,
         "chapter_id": span.chapter_id,
-        "micro_topic": span.micro_topic,
+        "micro_summary": span.micro_summary,
         "span_type": span.span_type,
         "salience_score": span.salience_score,
         "range": [span.span_start_idx, span.span_end_idx],

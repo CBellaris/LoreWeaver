@@ -108,7 +108,6 @@ class SQLiteStore:
                     span_index_in_window INTEGER NOT NULL,
                     window_start INTEGER NOT NULL,
                     window_end INTEGER NOT NULL,
-                    micro_topic TEXT NOT NULL,
                     span_type TEXT NOT NULL,
                     micro_summary TEXT NOT NULL,
                     entities_json TEXT NOT NULL,
@@ -695,15 +694,14 @@ class SQLiteStore:
                 """
                 INSERT INTO spans (
                     span_id, document_id, chapter_id, window_id, span_index_in_window,
-                    window_start, window_end, micro_topic, span_type, micro_summary,
+                    window_start, window_end, span_type, micro_summary,
                     entities_json, topics_json, salience_score, start_anchor_quote,
                     end_anchor_quote, key_quote, overlap_reason, span_start_idx,
                     span_end_idx, located_text, locator_confidence, locator_status, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(span_id) DO UPDATE SET
                     span_index_in_window=excluded.span_index_in_window,
-                    micro_topic=excluded.micro_topic,
                     span_type=excluded.span_type,
                     micro_summary=excluded.micro_summary,
                     entities_json=excluded.entities_json,
@@ -728,7 +726,6 @@ class SQLiteStore:
                     span.span_index_in_window,
                     span.window_start,
                     span.window_end,
-                    span.micro_topic,
                     span.span_type,
                     span.micro_summary,
                     json.dumps(span.entities, ensure_ascii=False),
@@ -887,6 +884,19 @@ class SQLiteStore:
                 VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
                 """,
                 (window_id, span_id, stage, reason, attempts, raw_output),
+            )
+
+    def delete_extraction_failures_for_spans(self, span_ids: Iterable[str]) -> None:
+        ids = list(dict.fromkeys(span_ids))
+        if not ids:
+            return
+        placeholders = ",".join("?" for _ in ids)
+        with self.connect() as connection:
+            if not _table_exists(connection, "extraction_failures"):
+                return
+            connection.execute(
+                f"DELETE FROM extraction_failures WHERE span_id IN ({placeholders})",
+                ids,
             )
 
     def insert_extraction_report(self, run_id: str, document_id: str, report: dict) -> None:
@@ -1190,7 +1200,6 @@ def _span_from_row(row: sqlite3.Row) -> Span:
         span_index_in_window=row["span_index_in_window"],
         window_start=row["window_start"],
         window_end=row["window_end"],
-        micro_topic=row["micro_topic"],
         span_type=row["span_type"],
         micro_summary=row["micro_summary"],
         entities=json.loads(row["entities_json"]),

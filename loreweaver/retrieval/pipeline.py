@@ -245,7 +245,6 @@ def _result_payload(result: RerankResult, candidate: UnionCandidate) -> dict[str
         "chapter_id": span.chapter_id,
         "span_start_idx": span.span_start_idx,
         "span_end_idx": span.span_end_idx,
-        "micro_topic": span.micro_topic,
         "span_type": span.span_type,
         "micro_summary": span.micro_summary,
         "entities": span.entities,
@@ -267,6 +266,5 @@ def _candidate_payload(candidate: UnionCandidate) -> dict[str, Any]:
         "chapter_id": span.chapter_id,
         "span_start_idx": span.span_start_idx,
         "span_end_idx": span.span_end_idx,
-        "micro_topic": span.micro_topic,
         "micro_summary": span.micro_summary,
     }

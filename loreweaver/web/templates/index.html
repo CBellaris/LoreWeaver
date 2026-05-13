@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>LoreWeaver Debug</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=span-review-2">
   </head>
   <body>
     <div class="app-shell">
@@ -20,6 +20,7 @@
           <button class="nav-item active" data-view="overview">Overview</button>
           <button class="nav-item" data-view="runner">Runner</button>
           <button class="nav-item" data-view="retrieval">Retrieval</button>
+          <button class="nav-item" data-view="span-review">Span Review</button>
           <button class="nav-item" data-view="neo4j">Neo4j</button>
         </nav>
       </aside>
@@ -63,6 +64,7 @@
                     <span>Env Var</span>
                     <select id="runner-api-env">
                       <option value="">disabled</option>
+                      <option value="DEEPSEEK_API_KEY">DEEPSEEK_API_KEY</option>
                       <option value="SILICONFLOW_API_KEY">SILICONFLOW_API_KEY</option>
                       <option value="OPENAI_API_KEY">OPENAI_API_KEY</option>
                     </select>
@@ -135,6 +137,7 @@
                 <span>API Env</span>
                 <select id="retrieve-api-env">
                   <option value="">disabled</option>
+                  <option value="DEEPSEEK_API_KEY">DEEPSEEK_API_KEY</option>
                   <option value="SILICONFLOW_API_KEY">SILICONFLOW_API_KEY</option>
                   <option value="OPENAI_API_KEY">OPENAI_API_KEY</option>
                 </select>
@@ -148,6 +151,52 @@
           <section class="panel result-panel">
             <div id="retrieval-result"></div>
           </section>
+        </section>
+
+        <section id="view-span-review" class="view">
+          <header class="view-header">
+            <div>
+              <h2>Span Review</h2>
+              <p>Window coverage, gaps, and located span overlays</p>
+            </div>
+            <button id="span-review-refresh" class="button">Refresh</button>
+          </header>
+          <section class="panel">
+            <div class="form-grid">
+              <label class="field">
+                <span>Document ID</span>
+                <input id="span-review-document-id" placeholder="latest">
+              </label>
+              <label class="field">
+                <span>Window Range</span>
+                <input id="span-review-window-range" placeholder="0-100">
+              </label>
+              <label class="field">
+                <span>Min Gap Chars</span>
+                <input id="span-review-min-gap" type="number" min="0" value="0">
+              </label>
+              <label class="field">
+                <span>Limit</span>
+                <input id="span-review-limit" type="number" min="1" value="120">
+              </label>
+              <label class="check-field">
+                <input id="span-review-with-spans" type="checkbox" checked>
+                <span>with spans only</span>
+              </label>
+            </div>
+          </section>
+          <div class="review-layout">
+            <section class="panel">
+              <div class="panel-title">
+                <h3>Windows</h3>
+              </div>
+              <div id="span-review-summary"></div>
+              <div id="span-review-list" class="list"></div>
+            </section>
+            <section class="panel result-panel review-detail-panel">
+              <div id="span-review-detail" class="review-empty">Select a window to inspect coverage.</div>
+            </section>
+          </div>
         </section>
 
         <section id="view-neo4j" class="view">
@@ -169,6 +218,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=span-review-2"></script>
   </body>
 </html>

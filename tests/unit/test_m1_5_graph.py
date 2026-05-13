@@ -116,7 +116,7 @@ def _sample_spans(document_id: str) -> list[Span]:
         ("mystery_clue", "身份复苏异常", "高文复苏后的身份与年代形成疑点。", ["高文", "瑞贝卡"], ["身份异常", "伏笔"]),
         ("mystery_clue", "古老秘密线索", "旧时代秘密在对话中被反复暗示。", ["高文", "塞西尔家族"], ["秘密", "伏笔"]),
     ]
-    for index, (span_type, topic, summary, entities, topics) in enumerate(rows, start=1):
+    for index, (span_type, _topic, summary, entities, topics) in enumerate(rows, start=1):
         chapter_index = 1 if index <= 4 else 2 if index <= 8 else 3
         spans.append(
             Span(
@@ -127,7 +127,6 @@ def _sample_spans(document_id: str) -> list[Span]:
                 span_index_in_window=index,
                 window_start=(chapter_index - 1) * 1000,
                 window_end=chapter_index * 1000,
-                micro_topic=topic,
                 span_type=span_type,
                 micro_summary=summary,
                 entities=entities,

@@ -30,6 +30,8 @@ extraction:
   batch_model: "deepseek-ai/DeepSeek-V3.1-Terminus"
   temperature: 0
   max_retries: 2
+  batch_live_retry_threshold: 5
+  batch_retry_max_rounds: 3
   min_spans_per_window: 2
   max_spans_per_window: 12
   target_span_chars_min: 30

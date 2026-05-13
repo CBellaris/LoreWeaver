@@ -15,7 +15,6 @@ class Span:
     span_index_in_window: int
     window_start: int
     window_end: int
-    micro_topic: str
     span_type: str
     micro_summary: str
     entities: list[str]

@@ -143,7 +143,6 @@ def build_embedding_input(
     include_located_text: bool = False,
 ) -> str:
     parts = [
-        f"micro_topic: {span.micro_topic}",
         f"micro_summary: {span.micro_summary}",
         f"entities: {', '.join(span.entities)}",
         f"topics: {', '.join(span.topics)}",
@@ -176,4 +175,3 @@ def _hash_embedding(text: str, dimensions: int) -> list[float]:
     vector = [(byte / 255.0) - 0.5 for byte in raw[:dimensions]]
     norm = math.sqrt(sum(value * value for value in vector)) or 1.0
     return [value / norm for value in vector]
-

@@ -17,7 +17,6 @@ class BM25Document:
     chapter_id: str
     span_start_idx: int | None
     span_end_idx: int | None
-    micro_topic: str
     micro_summary: str
     entities: list[str]
     topics: list[str]
@@ -56,7 +55,6 @@ class BM25Index:
                 chapter_id=item["chapter_id"],
                 span_start_idx=item["span_start_idx"],
                 span_end_idx=item["span_end_idx"],
-                micro_topic=item["micro_topic"],
                 micro_summary=item["micro_summary"],
                 entities=list(item["entities"]),
                 topics=list(item["topics"]),
@@ -143,7 +141,6 @@ def _document_from_span(span: Span) -> BM25Document:
     text = "\n".join(
         part
         for part in [
-            span.micro_topic,
             span.micro_summary,
             " ".join(span.entities),
             " ".join(span.topics),
@@ -157,7 +154,6 @@ def _document_from_span(span: Span) -> BM25Document:
         chapter_id=span.chapter_id,
         span_start_idx=span.span_start_idx,
         span_end_idx=span.span_end_idx,
-        micro_topic=span.micro_topic,
         micro_summary=span.micro_summary,
         entities=span.entities,
         topics=span.topics,

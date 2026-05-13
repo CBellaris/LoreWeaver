@@ -3,6 +3,8 @@ const state = {
   currentJobId: null,
   eventSource: null,
   inspectorMode: "windows",
+  spanReviewWindows: [],
+  selectedReviewWindowId: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -23,6 +25,9 @@ function bindNavigation() {
       $$(".view").forEach((view) => view.classList.remove("active"));
       button.classList.add("active");
       $(`#view-${button.dataset.view}`).classList.add("active");
+      if (button.dataset.view === "span-review" && state.spanReviewWindows.length === 0) {
+        loadSpanReview();
+      }
     });
   });
 
@@ -33,9 +38,14 @@ function bindActions() {
   $("#run-command").addEventListener("click", runSelectedCommand);
   $("#cancel-job").addEventListener("click", cancelCurrentJob);
   $("#run-retrieve").addEventListener("click", runRetrievalWorkbench);
+  $("#span-review-refresh").addEventListener("click", loadSpanReview);
   $("#neo4j-refresh").addEventListener("click", loadNeo4jStatus);
   $("#neo4j-start").addEventListener("click", startNeo4j);
   $("#command-select").addEventListener("change", renderCommandFields);
+  $("#span-review-min-gap").addEventListener("change", loadSpanReview);
+  $("#span-review-limit").addEventListener("change", loadSpanReview);
+  $("#span-review-window-range").addEventListener("change", loadSpanReview);
+  $("#span-review-with-spans").addEventListener("change", loadSpanReview);
 }
 
 async function api(path, options = {}) {
@@ -133,7 +143,29 @@ function fieldHtml(name) {
       </label>
     `;
   }
-  const wide = ["question", "query", "source", "window_id", "window_range"].includes(name) ? " wide" : "";
+  if (name === "profile") {
+    return `
+      <label class="field">
+        <span>profile</span>
+        <select id="field-profile" data-field="profile">
+          <option value="broad">broad</option>
+          <option value="pinpoint">pinpoint</option>
+          <option value="mixed">mixed</option>
+        </select>
+      </label>
+    `;
+  }
+  const wide = [
+    "question",
+    "query",
+    "source",
+    "window_id",
+    "window_range",
+    "corpus",
+    "questions",
+    "predictions",
+    "output",
+  ].includes(name) ? " wide" : "";
   return `
     <label class="field${wide}">
       <span>${escapeHtml(name.replaceAll("_", " "))}</span>
@@ -161,6 +193,22 @@ function seedCommandDefaults(command) {
   if (command === "index") {
     setCheckbox("mock_embeddings", true);
   }
+  if (command === "eval-build-corpus") {
+    setField("chapter_start", "1");
+    setField("chapter_end", "100");
+  }
+  if (command === "eval-generate") {
+    setField("corpus", "data/eval/corpora/doc_59331b17113e_ch001_100.json");
+    setField("question_count", "50");
+    setField("max_output_tokens", "384000");
+  }
+  if (command === "eval-run") {
+    setField("questions", "data/eval/question_sets/doc_59331b17113e_ch001_100_broad_v001.jsonl");
+    setCheckbox("no_reranker", true);
+  }
+  if (command === "eval-report") {
+    setField("predictions", "data/eval/runs/<run_id>_predictions.jsonl");
+  }
 }
 
 function setField(name, value) {
@@ -176,16 +224,32 @@ function setCheckbox(name, value) {
 function updateCliPreview() {
   const command = $("#command-select").value;
   const payload = collectCommandPayload();
+  const cli = cliCommandParts(command, payload);
+  const positionalKeys = new Set(cli.positionals);
   const args = Object.entries(payload).flatMap(([key, value]) => {
+    if (positionalKeys.has(key)) return [];
     const flag = `--${key.replaceAll("_", "-")}`;
     if (typeof value === "boolean") return value ? [flag] : [];
     return value === "" || value === null || value === undefined ? [] : [flag, quoteArg(String(value))];
   });
-  const positional = [];
-  if (payload.question) positional.push(quoteArg(payload.question));
-  if (payload.query) positional.push(quoteArg(payload.query));
-  const filteredArgs = args.filter((item) => !["--question", quoteArg(payload.question || ""), "--query", quoteArg(payload.query || "")].includes(item));
-  $("#cli-preview").textContent = `python -m loreweaver.cli ${command} ${positional.concat(filteredArgs).join(" ")}`.trim();
+  const positional = cli.positionals
+    .map((key) => payload[key])
+    .filter((value) => value !== "" && value !== null && value !== undefined)
+    .map((value) => quoteArg(String(value)));
+  $("#cli-preview").textContent = `python -m loreweaver.cli ${cli.command} ${positional.concat(args).join(" ")}`.trim();
+}
+
+function cliCommandParts(command, payload) {
+  const evalCommands = {
+    "eval-build-corpus": { command: "eval build-corpus", positionals: [] },
+    "eval-generate": { command: "eval generate", positionals: ["corpus"] },
+    "eval-run": { command: "eval run", positionals: ["questions"] },
+    "eval-report": { command: "eval report", positionals: ["predictions"] },
+  };
+  if (evalCommands[command]) return evalCommands[command];
+  if (payload.question) return { command, positionals: ["question"] };
+  if (payload.query) return { command, positionals: ["query"] };
+  return { command, positionals: [] };
 }
 
 function collectCommandPayload() {
@@ -223,6 +287,190 @@ async function runRetrievalWorkbench() {
   });
   $("#retrieval-result").innerHTML = "";
   await startJob("retrieve", payload, $("#retrieval-result"));
+}
+
+async function loadSpanReview() {
+  const list = $("#span-review-list");
+  const summary = $("#span-review-summary");
+  list.innerHTML = loading();
+  summary.innerHTML = "";
+  const params = new URLSearchParams();
+  const documentId = $("#span-review-document-id").value.trim();
+  const windowRange = $("#span-review-window-range").value.trim();
+  const withSpansOnly = $("#span-review-with-spans").checked;
+  const minGap = $("#span-review-min-gap").value.trim();
+  const limit = $("#span-review-limit").value.trim();
+  if (documentId) params.set("document_id", documentId);
+  if (windowRange) params.set("window_range", windowRange);
+  if (withSpansOnly) params.set("with_spans_only", "true");
+  if (minGap) params.set("min_gap_chars", minGap);
+  if (limit) params.set("limit", limit);
+  try {
+    const data = await api(`/api/span-review?${params.toString()}`);
+    state.spanReviewWindows = data.windows || [];
+    state.selectedReviewWindowId = null;
+    summary.innerHTML = renderSpanReviewSummary(data.summary || {});
+    list.innerHTML = renderSpanReviewList(state.spanReviewWindows);
+    $$("#span-review-list [data-window-id]").forEach((button) => {
+      button.addEventListener("click", () => loadSpanReviewWindow(button.dataset.windowId));
+    });
+    $("#span-review-detail").innerHTML = state.spanReviewWindows.length
+      ? "Select a window to inspect coverage."
+      : "No windows match the current filters.";
+  } catch (error) {
+    list.innerHTML = errorBox(error);
+  }
+}
+
+function renderSpanReviewSummary(summary) {
+  return `
+    <div class="metric-grid compact-metrics">
+      ${metric("Windows", summary.window_count || 0)}
+      ${metric("Coverage", `${percent(summary.coverage_ratio)}%`)}
+      ${metric("Max Gap", summary.max_gap_chars || 0)}
+      ${metric("Failed", summary.failed_window_count || 0)}
+    </div>
+  `;
+}
+
+function renderSpanReviewList(windows) {
+  if (!windows.length) return `<div class="status-line">no windows</div>`;
+  return windows.map((item) => `
+    <button class="list-item review-window-item" data-window-id="${escapeHtml(item.window_id)}">
+      <strong>#${escapeHtml(item.global_window_index ?? "?")} ${escapeHtml(item.window_id)}</strong>
+      <span>${escapeHtml(item.chapter_title || item.chapter_id)} · window ${escapeHtml(item.window_index)}</span>
+      <div class="review-meter" title="${escapeHtml(percent(item.coverage_ratio))}% covered">
+        <div style="width: ${escapeHtml(percent(item.coverage_ratio))}%"></div>
+      </div>
+      <span>${escapeHtml(item.uncovered_chars)} uncovered · max gap ${escapeHtml(item.max_gap_chars)} · ${escapeHtml(item.failed_count)} failed</span>
+      <div class="pill-row">${(item.hint_tags || []).map(tagPill).join("")}</div>
+    </button>
+  `).join("");
+}
+
+async function loadSpanReviewWindow(windowId) {
+  state.selectedReviewWindowId = windowId;
+  $$("#span-review-list [data-window-id]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.windowId === windowId);
+  });
+  const detail = $("#span-review-detail");
+  detail.innerHTML = loading();
+  try {
+    const data = await api(`/api/span-review/${encodeURIComponent(windowId)}`);
+    detail.innerHTML = renderSpanReviewDetail(data);
+    bindSpanHoverCards(data);
+  } catch (error) {
+    detail.innerHTML = errorBox(error);
+  }
+}
+
+function renderSpanReviewDetail(data) {
+  const audit = data.audit || {};
+  const spans = data.spans || [];
+  const gaps = data.gaps || [];
+  return `
+    <div class="panel-title">
+      <h3>${escapeHtml(audit.window_id || "")}</h3>
+      <div class="pill-row">${(audit.hint_tags || []).map(tagPill).join("")}</div>
+    </div>
+    <div class="metric-grid compact-metrics">
+      ${metric("Coverage", `${percent(audit.coverage_ratio)}%`)}
+      ${metric("Spans", `${audit.located_count || 0}/${audit.span_count || 0}`)}
+      ${metric("Gaps", audit.gap_count || 0)}
+      ${metric("Max Gap", audit.max_gap_chars || 0)}
+    </div>
+    <div class="review-section">
+      <h4>Text Overlay</h4>
+      <div class="review-text">${renderCoverageSegments(data.segments || [])}</div>
+    </div>
+    <div class="review-section">
+      <h4>Spans</h4>
+      ${simpleTable(spans, [
+        "span_index_in_window",
+        "span_id",
+        "locator_status",
+        "span_type",
+        "salience_score",
+        "locator_confidence",
+        "span_start_idx",
+        "span_end_idx",
+        "micro_summary",
+        "failure_reasons",
+      ])}
+    </div>
+    <div class="review-section">
+      <h4>Gaps</h4>
+      ${simpleTable(gaps, [
+        "gap_index",
+        "start_idx",
+        "end_idx",
+        "char_count",
+        "left_span_id",
+        "right_span_id",
+        "text_preview",
+      ])}
+    </div>
+  `;
+}
+
+function renderCoverageSegments(segments) {
+  if (!segments.length) return "";
+  return segments.map((segment) => {
+    const spanIds = segment.span_ids || [];
+    if (!spanIds.length) {
+      return `<span class="coverage-gap" title="${segmentTitle(segment)}">${escapeHtml(segment.text)}</span>`;
+    }
+    const depth = Math.min(spanIds.length, 4);
+    const color = hashIndex(spanIds[0], 6);
+    return `<span class="coverage-span coverage-color-${color} coverage-depth-${depth}" data-span-ids="${escapeHtml(spanIds.join(","))}" title="${segmentTitle(segment)}">${escapeHtml(segment.text)}</span>`;
+  }).join("");
+}
+
+function bindSpanHoverCards(data) {
+  const spansById = new Map((data.spans || []).map((span) => [span.span_id, span]));
+  $$(".coverage-span").forEach((element) => {
+    const spanIds = (element.dataset.spanIds || "").split(",").filter(Boolean);
+    const lines = spanIds.map((spanId) => spanHoverText(spansById.get(spanId))).filter(Boolean);
+    if (lines.length) element.title = lines.join("\n\n");
+  });
+}
+
+function spanHoverText(span) {
+  if (!span) return "";
+  return [
+    span.span_id,
+    `${span.span_type} · salience ${span.salience_score} · confidence ${span.locator_confidence}`,
+    `[${span.span_start_idx}, ${span.span_end_idx})`,
+    span.micro_summary,
+    `start: ${span.start_anchor_quote}`,
+    `end: ${span.end_anchor_quote}`,
+  ].filter(Boolean).join("\n");
+}
+
+function segmentTitle(segment) {
+  const ids = segment.span_ids && segment.span_ids.length ? `spans: ${segment.span_ids.join(", ")}` : "gap";
+  return `${ids}\n[${segment.start_idx}, ${segment.end_idx})`;
+}
+
+function tagPill(tag) {
+  const kind = tag.includes("failed") || tag.includes("rejected")
+    ? "bad"
+    : tag.includes("review") || tag.includes("cap")
+      ? "warn"
+      : "good";
+  return `<span class="pill ${kind}">${escapeHtml(tag)}</span>`;
+}
+
+function percent(value) {
+  return (Number(value || 0) * 100).toFixed(1);
+}
+
+function hashIndex(value, modulo) {
+  let hash = 0;
+  for (const char of String(value || "")) {
+    hash = (hash * 31 + char.charCodeAt(0)) % 9973;
+  }
+  return hash % modulo;
 }
 
 async function startJob(command, payload, resultTarget) {
@@ -331,6 +579,15 @@ function renderResult(result, target) {
   if (result && result.answer) {
     parts.push(renderAnswerReport(result));
   }
+  if (result && result.metrics) {
+    parts.push(renderEvalReport(result));
+  }
+  if (result && result.question_set_path) {
+    parts.push(renderEvalGenerationReport(result));
+  }
+  if (result && result.corpus_path && result.chapter_count) {
+    parts.push(renderEvalCorpusReport(result));
+  }
   parts.push(`<pre class="json-view">${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
   target.innerHTML = parts.join("");
 }
@@ -365,7 +622,7 @@ function renderRetrievalReport(report) {
         "sources",
         "source_scores",
         "normalized_scores",
-        "micro_topic",
+        "micro_summary",
         "span_start_idx",
         "span_end_idx",
       ])}
@@ -379,7 +636,7 @@ function renderRetrievalReport(report) {
         "source_scores",
         "normalized_scores",
         "cluster_ids",
-        "micro_topic",
+        "micro_summary",
       ])}
     </div>
   `;
@@ -413,6 +670,70 @@ function renderAnswerReport(report) {
       <div class="panel text-preview">${escapeHtml(report.answer || "")}</div>
     </div>
   `;
+}
+
+function renderEvalReport(report) {
+  const overall = (report.metrics || {}).overall || {};
+  return `
+    <div class="retrieval-section">
+      <div class="metric-grid">
+        ${metric("Questions", report.question_count || 0)}
+        ${metric("Recall@3", formatMetric(overall.weighted_recall_at_3))}
+        ${metric("Recall@20", formatMetric(overall.weighted_recall_at_20))}
+        ${metric("NDCG@20", formatMetric(overall.ndcg_at_20))}
+        ${metric("Facet@20", formatMetric(overall.facet_coverage_at_20))}
+        ${metric("MRR", formatMetric(overall.mrr))}
+      </div>
+    </div>
+    <div class="retrieval-section">
+      ${keyValueTable({
+        predictions_path: report.predictions_path || "",
+        summary_path: report.report_path || "",
+        failures_path: report.failures_path || "",
+      })}
+    </div>
+  `;
+}
+
+function renderEvalGenerationReport(report) {
+  return `
+    <div class="retrieval-section">
+      <div class="metric-grid">
+        ${metric("Requested", report.requested_question_count || 0)}
+        ${metric("Generated", report.generated_question_count || 0)}
+        ${metric("Profile", report.profile || "")}
+      </div>
+    </div>
+    <div class="retrieval-section">
+      ${keyValueTable({
+        corpus_path: report.corpus_path || "",
+        question_set_path: report.question_set_path || "",
+        report_path: report.report_path || "",
+      })}
+    </div>
+  `;
+}
+
+function renderEvalCorpusReport(report) {
+  return `
+    <div class="retrieval-section">
+      <div class="metric-grid">
+        ${metric("Chapters", report.chapter_count || 0)}
+        ${metric("Chars", report.char_count || 0)}
+        ${metric("Range", `${report.chapter_start || ""}-${report.chapter_end || ""}`)}
+      </div>
+    </div>
+    <div class="retrieval-section">
+      ${keyValueTable({
+        document_id: (report.document || {}).document_id || "",
+        corpus_path: report.corpus_path || "",
+      })}
+    </div>
+  `;
+}
+
+function formatMetric(value) {
+  return value === null || value === undefined ? "0.0000" : Number(value).toFixed(4);
 }
 
 async function loadNeo4jStatus() {
@@ -533,6 +854,7 @@ function isBooleanField(name) {
     "mock",
     "batch",
     "batch_wait",
+    "repair_failed",
     "mock_embeddings",
     "mock_reranker",
     "no_reranker",
@@ -553,6 +875,16 @@ function placeholderFor(name) {
     top_salience: "30",
     window_range: "21-40",
     batch_poll_interval: "30",
+    span_chars_min: "1",
+    span_chars_max: "2000",
+    chapter_start: "1",
+    chapter_end: "100",
+    question_count: "50",
+    max_output_tokens: "384000",
+    corpus: "data/eval/corpora/...",
+    questions: "data/eval/question_sets/...",
+    predictions: "data/eval/runs/...",
+    output: "optional output path",
   };
   return values[name] || "";
 }
