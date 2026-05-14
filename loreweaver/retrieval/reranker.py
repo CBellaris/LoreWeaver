@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from loreweaver.config import AppConfig
+from loreweaver.model_services import resolve_model_service
+from loreweaver.model_services.clients.rerank_http import HttpRerankClient
+from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
 from loreweaver.models.chapter import Chapter
 from loreweaver.retrieval.models import RerankCandidate, RerankResult, UnionCandidate
 from loreweaver.storage.bm25_store import tokenize_for_bm25
@@ -64,39 +64,19 @@ class SiliconFlowReranker:
     provider = "siliconflow"
 
     def __init__(self, settings: RerankerSettings) -> None:
-        if not settings.api_key_env:
-            raise ValueError("SiliconFlow reranker requires api_key_env in provider config.")
-        api_key = os.environ.get(settings.api_key_env)
-        if not api_key:
-            raise ValueError(f"Missing API key environment variable: {settings.api_key_env}")
-        self._api_key = api_key
-        self._base_url = (settings.base_url or "https://api.siliconflow.cn/v1").rstrip("/")
-        self._timeout_seconds = settings.timeout_seconds
+        self.provider = settings.provider
         self.model = settings.model
+        self._client = HttpRerankClient(_service_config_from_reranker_settings(settings))
 
     def rerank(self, question: str, candidates: list[RerankCandidate]) -> list[RerankResult]:
         if not candidates:
             return []
-        payload = {
-            "model": self.model,
-            "query": question,
-            "documents": [candidate.text for candidate in candidates],
-            "top_n": len(candidates),
-            "return_documents": False,
-        }
-        request = urllib.request.Request(
-            f"{self._base_url}/rerank",
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        service_result = self._client.rerank(
+            query=question,
+            documents=[candidate.text for candidate in candidates],
+            top_n=len(candidates),
         )
-        with urllib.request.urlopen(request, timeout=self._timeout_seconds) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-
-        indexed_scores = _parse_rerank_response(response_payload)
+        indexed_scores = [(score.index, score.score) for score in service_result.scores]
         scored = [
             (candidates[index], score)
             for index, score in indexed_scores
@@ -110,16 +90,14 @@ class SiliconFlowReranker:
 
 
 def reranker_settings_from_configs(models_config: AppConfig) -> RerankerSettings:
-    model_settings = models_config.values.get("models", {}).get("reranker", {})
-    provider = str(model_settings.get("provider", "noop"))
-    provider_settings = models_config.values.get("providers", {}).get(provider, {})
+    service_config = resolve_model_service(models_config=models_config, service="reranker")
     return RerankerSettings(
-        provider=provider,
-        model=str(model_settings.get("name", "")),
-        enabled=bool(model_settings.get("enabled", False)),
-        api_key_env=provider_settings.get("api_key_env"),
-        base_url=provider_settings.get("base_url"),
-        timeout_seconds=float(model_settings.get("timeout_seconds", 30)),
+        provider=service_config.provider.name,
+        model=service_config.model,
+        enabled=service_config.enabled,
+        api_key_env=service_config.api_key_env,
+        base_url=service_config.base_url,
+        timeout_seconds=service_config.timeout_seconds,
     )
 
 
@@ -185,6 +163,22 @@ def _parse_rerank_response(payload: dict[str, Any]) -> list[tuple[int, float]]:
             continue
         parsed.append((int(index), float(score)))
     return parsed
+
+
+def _service_config_from_reranker_settings(settings: RerankerSettings) -> ModelServiceConfig:
+    return ModelServiceConfig(
+        service="reranker",
+        capability="rerank",
+        provider=ProviderConfig(
+            name=settings.provider,
+            adapter="http_rerank",
+            api_key_env=settings.api_key_env,
+            base_url=settings.base_url,
+        ),
+        model=settings.model,
+        enabled=settings.enabled,
+        timeout_seconds=settings.timeout_seconds,
+    )
 
 
 def _results_from_scores(

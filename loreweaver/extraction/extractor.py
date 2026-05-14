@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
-import urllib.request
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +24,9 @@ from loreweaver.extraction.locator import (
 from loreweaver.extraction.prompts import build_extraction_messages
 from loreweaver.extraction.retry import RetryPolicy
 from loreweaver.extraction.schemas import SpanCandidatePayload, WindowExtractionPayload
+from loreweaver.model_services import ChatRequest, resolve_model_service
+from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
+from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
 from loreweaver.models.span import Span
 from loreweaver.models.window import CandidateWindow
 from loreweaver.progress import ProgressReporter
@@ -122,22 +123,24 @@ class OpenAIChatClient:
         self,
         *,
         api_key_env: str,
+        provider: str = "openai",
         base_url: str | None = None,
         json_response_format: bool = False,
     ) -> None:
-        api_key = os.environ.get(api_key_env)
-        if not api_key:
-            raise ValueError(f"Missing API key environment variable: {api_key_env}")
-        try:
-            from openai import OpenAI
-        except ImportError as error:
-            raise RuntimeError(
-                "The openai package is required for live extraction. "
-                "Install optional M1 dependencies first."
-            ) from error
-
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._json_response_format = json_response_format
+        service_config = ModelServiceConfig(
+            service="extraction",
+            capability="chat",
+            provider=ProviderConfig(
+                name=provider,
+                adapter="openai_compatible",
+                api_key_env=api_key_env,
+                base_url=base_url,
+            ),
+            model="",
+            json_response_format=json_response_format,
+        )
+        self._client = OpenAICompatibleClient(service_config)
 
     def complete_json(
         self,
@@ -146,23 +149,15 @@ class OpenAIChatClient:
         model: str,
         temperature: float,
     ) -> tuple[str, dict[str, int]]:
-        request: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if self._json_response_format:
-            request["response_format"] = {"type": "json_object"}
-        response = self._client.chat.completions.create(**request)
-        content = response.choices[0].message.content or ""
-        usage = {}
-        if response.usage is not None:
-            usage = {
-                "input_tokens": int(getattr(response.usage, "prompt_tokens", 0) or 0),
-                "output_tokens": int(getattr(response.usage, "completion_tokens", 0) or 0),
-                "total_tokens": int(getattr(response.usage, "total_tokens", 0) or 0),
-            }
-        return content, usage
+        result = self._client.complete(
+            ChatRequest(
+                messages=messages,
+                temperature=temperature,
+                response_format="json_object" if self._json_response_format else "none",
+                extra={"model": model},
+            )
+        )
+        return result.content, result.usage
 
     def submit_chat_batch(
         self,
@@ -171,50 +166,19 @@ class OpenAIChatClient:
         completion_window: str = "24h",
         metadata: dict[str, str] | None = None,
     ) -> BatchSubmission:
-        with input_path.open("rb") as file_obj:
-            uploaded = self._client.files.create(file=file_obj, purpose="batch")
-        input_file_id = _uploaded_file_id(uploaded)
-        batch = self._client.batches.create(
-            input_file_id=input_file_id,
-            endpoint="/v1/chat/completions",
+        submission = self._client.submit_chat_batch(
+            input_path=input_path,
             completion_window=completion_window,
-            metadata=metadata or {},
+            metadata=metadata,
         )
-        return BatchSubmission(
-            batch_id=str(batch.id),
-            input_file_id=input_file_id,
-            status=str(getattr(batch, "status", "")),
-            output_file_id=_optional_str(getattr(batch, "output_file_id", None)),
-            error_file_id=_optional_str(getattr(batch, "error_file_id", None)),
-            request_counts=_request_counts_dict(getattr(batch, "request_counts", None)),
-        )
+        return BatchSubmission(**asdict(submission))
 
     def retrieve_chat_batch(self, batch_id: str) -> BatchStatus:
-        batch = self._client.batches.retrieve(batch_id)
-        return BatchStatus(
-            batch_id=str(batch.id),
-            status=str(getattr(batch, "status", "")),
-            input_file_id=_optional_str(getattr(batch, "input_file_id", None)),
-            output_file_id=_optional_str(getattr(batch, "output_file_id", None)),
-            error_file_id=_optional_str(getattr(batch, "error_file_id", None)),
-            request_counts=_request_counts_dict(getattr(batch, "request_counts", None)),
-        )
+        status = self._client.retrieve_chat_batch(batch_id)
+        return BatchStatus(**asdict(status))
 
     def download_file_text(self, file_id: str) -> str:
-        if file_id.startswith(("http://", "https://")):
-            with urllib.request.urlopen(file_id, timeout=60) as response:
-                return response.read().decode("utf-8")
-        content = self._client.files.content(file_id)
-        if hasattr(content, "text"):
-            return str(content.text)
-        if hasattr(content, "content"):
-            raw_content = content.content
-            if isinstance(raw_content, bytes):
-                return raw_content.decode("utf-8")
-            return str(raw_content)
-        if isinstance(content, bytes):
-            return content.decode("utf-8")
-        return str(content)
+        return self._client.download_file_text(file_id)
 
 
 class MockChatClient:
@@ -360,6 +324,7 @@ def extract_document_windows(
     else:
         client = OpenAIChatClient(
             api_key_env=str(model_settings["api_key_env"]),
+            provider=str(model_settings["provider"]),
             base_url=model_settings.get("base_url"),
             json_response_format=bool(model_settings.get("json_response_format", False)),
         )
@@ -2004,22 +1969,19 @@ def _format_uncovered_block(window: CandidateWindow, start: int, end: int) -> st
 
 
 def _model_settings(models_config: AppConfig) -> dict[str, Any]:
-    model_values = models_config.values
-    extraction_model = model_values.get("models", {}).get("extraction", {})
-    provider_name = extraction_model.get("provider", "openai")
-    provider = model_values.get("providers", {}).get(provider_name, {})
+    service_config = resolve_model_service(models_config=models_config, service="extraction")
     return {
-        "provider": provider_name,
-        "model": extraction_model.get("name", "gpt-4o-mini"),
-        "temperature": extraction_model.get("temperature", 0),
-        "api_key_env": provider.get("api_key_env", "OPENAI_API_KEY"),
-        "base_url": provider.get("base_url"),
-        "input_yuan_per_1k": extraction_model.get("input_yuan_per_1k", 0.0),
-        "output_yuan_per_1k": extraction_model.get("output_yuan_per_1k", 0.0),
-        "json_response_format": extraction_model.get("json_response_format", False),
-        "batch_model": extraction_model.get("batch_name"),
-        "batch_input_yuan_per_1k": extraction_model.get("batch_input_yuan_per_1k", 0.0),
-        "batch_output_yuan_per_1k": extraction_model.get("batch_output_yuan_per_1k", 0.0),
+        "provider": service_config.provider.name,
+        "model": service_config.model or "gpt-4o-mini",
+        "temperature": 0 if service_config.temperature is None else service_config.temperature,
+        "api_key_env": service_config.api_key_env or "OPENAI_API_KEY",
+        "base_url": service_config.base_url,
+        "input_yuan_per_1k": service_config.pricing.input_yuan_per_1k,
+        "output_yuan_per_1k": service_config.pricing.output_yuan_per_1k,
+        "json_response_format": service_config.json_response_format,
+        "batch_model": service_config.batch_model,
+        "batch_input_yuan_per_1k": service_config.batch_pricing.input_yuan_per_1k,
+        "batch_output_yuan_per_1k": service_config.batch_pricing.output_yuan_per_1k,
     }
 
 

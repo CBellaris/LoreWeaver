@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +16,10 @@ from loreweaver.eval.question_set import (
     write_question_set,
 )
 from loreweaver.logging import new_run_id
+from loreweaver.model_services import ChatRequest, resolve_model_service
+from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
+from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
+from loreweaver.model_services.errors import EmptyModelResponse
 
 
 class QuestionGeneratorClient(Protocol):
@@ -53,20 +56,23 @@ class OpenAICompatibleQuestionGenerator:
     """OpenAI-compatible chat client for long-context eval question generation."""
 
     def __init__(self, settings: EvalGeneratorSettings) -> None:
-        api_key = os.environ.get(settings.api_key_env)
-        if not api_key:
-            raise ValueError(f"Missing API key environment variable: {settings.api_key_env}")
-        try:
-            from openai import OpenAI
-        except ImportError as error:
-            raise RuntimeError(
-                "The openai package is required for live eval question generation. "
-                "Install optional M1 dependencies first."
-            ) from error
-
         self.provider = settings.provider
         self.model = settings.model
-        self._client = OpenAI(api_key=api_key, base_url=settings.base_url)
+        service_config = ModelServiceConfig(
+            service="eval_question_generator",
+            capability="chat",
+            provider=ProviderConfig(
+                name=settings.provider,
+                adapter="openai_compatible",
+                api_key_env=settings.api_key_env,
+                base_url=settings.base_url,
+            ),
+            model=settings.model,
+            temperature=settings.temperature,
+            max_output_tokens=settings.max_output_tokens,
+            json_response_format=settings.json_response_format,
+        )
+        self._client = OpenAICompatibleClient(service_config)
 
     def complete_json(
         self,
@@ -76,18 +82,19 @@ class OpenAICompatibleQuestionGenerator:
         max_output_tokens: int | None,
         json_response_format: bool,
     ) -> tuple[dict[str, Any], dict[str, int]]:
-        request: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        if max_output_tokens:
-            request["max_tokens"] = max_output_tokens
-        if json_response_format:
-            request["response_format"] = {"type": "json_object"}
-        response = self._client.chat.completions.create(**request)
-        content = _chat_content_from_response(response)
-        usage = _usage_from_response(response)
+        try:
+            result = self._client.complete(
+                ChatRequest(
+                    messages=messages,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    response_format="json_object" if json_response_format else "none",
+                )
+            )
+        except EmptyModelResponse as error:
+            raise EmptyQuestionGenerationResponse(str(error)) from error
+        content = result.content
+        usage = result.usage
         return _parse_json_object(content), usage
 
 
@@ -318,17 +325,22 @@ broad 题 expected_chapters 不得少于 6 章；pinpoint 题 expected_chapters 
 
 
 def eval_generator_settings_from_config(models_config: AppConfig) -> EvalGeneratorSettings:
-    model_settings = models_config.values.get("models", {}).get("eval_question_generator", {})
-    provider = str(model_settings.get("provider", "deepseek"))
-    provider_settings = models_config.values.get("providers", {}).get(provider, {})
+    service_config = resolve_model_service(
+        models_config=models_config,
+        service="eval_question_generator",
+    )
     return EvalGeneratorSettings(
-        provider=provider,
-        model=str(model_settings.get("name", "deepseek-v4-pro")),
-        api_key_env=str(provider_settings.get("api_key_env", "DEEPSEEK_API_KEY")),
-        base_url=provider_settings.get("base_url"),
-        temperature=float(model_settings.get("temperature", 0.2)),
-        max_output_tokens=_optional_int(model_settings.get("max_output_tokens")),
-        json_response_format=bool(model_settings.get("json_response_format", False)),
+        provider=service_config.provider.name,
+        model=service_config.model or "deepseek-v4-pro",
+        api_key_env=str(service_config.api_key_env or "DEEPSEEK_API_KEY"),
+        base_url=service_config.base_url,
+        temperature=(
+            float(service_config.temperature)
+            if service_config.temperature is not None
+            else 0.2
+        ),
+        max_output_tokens=service_config.max_output_tokens,
+        json_response_format=service_config.json_response_format,
     )
 
 

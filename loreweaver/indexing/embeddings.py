@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from loreweaver.config import AppConfig
+from loreweaver.model_services import ModelServiceFactory
+from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
 from loreweaver.models.span import Span
 
 
@@ -44,43 +45,17 @@ class OpenAICompatibleEmbeddingClient:
     """Embedding client for OpenAI-compatible providers such as SiliconFlow."""
 
     def __init__(self, settings: EmbeddingSettings) -> None:
-        if not settings.api_key_env:
-            raise ValueError(f"Provider {settings.provider} does not define api_key_env")
-        api_key = os.environ.get(settings.api_key_env)
-        if not api_key:
-            raise ValueError(f"Missing API key environment variable: {settings.api_key_env}")
-        try:
-            from openai import OpenAI
-        except ImportError as error:
-            raise RuntimeError(
-                "The openai package is required for live embedding calls. "
-                "Install optional M1 dependencies first."
-            ) from error
-
-        self._client = OpenAI(api_key=api_key, base_url=settings.base_url)
         self._settings = settings
+        self._client = OpenAICompatibleClient(
+            _service_config_from_embedding_settings(settings)
+        )
 
     def embed_texts(self, texts: list[str]) -> EmbeddingBatch:
         if not texts:
             return EmbeddingBatch(vectors=[], usage={})
 
-        request: dict[str, Any] = {
-            "model": self._settings.model,
-            "input": texts,
-        }
-        if self._settings.use_dimensions_param and self._settings.expected_dimensions:
-            request["dimensions"] = self._settings.expected_dimensions
-
-        response = self._client.embeddings.create(**request)
-        data = sorted(response.data, key=lambda item: int(getattr(item, "index", 0) or 0))
-        vectors = [[float(value) for value in item.embedding] for item in data]
-        usage = {}
-        if response.usage is not None:
-            usage = {
-                "input_tokens": int(getattr(response.usage, "prompt_tokens", 0) or 0),
-                "total_tokens": int(getattr(response.usage, "total_tokens", 0) or 0),
-            }
-        return EmbeddingBatch(vectors=vectors, usage=usage)
+        result = self._client.embed(texts)
+        return EmbeddingBatch(vectors=result.vectors, usage=result.usage)
 
 
 class MockEmbeddingClient:
@@ -105,34 +80,19 @@ def embedding_settings_from_configs(
     config: AppConfig,
     models_config: AppConfig,
 ) -> EmbeddingSettings:
-    indexing_config = config.values.get("indexing", {})
-    model_settings = models_config.values.get("models", {}).get("embedding", {})
-    provider = str(model_settings.get("provider", "siliconflow"))
-    provider_settings = models_config.values.get("providers", {}).get(provider, {})
-
-    expected_dimensions = model_settings.get(
-        "expected_dimensions",
-        indexing_config.get("embedding_dimensions"),
-    )
-    if expected_dimensions is not None:
-        expected_dimensions = int(expected_dimensions)
-
-    batch_size = int(
-        indexing_config.get(
-            "embedding_batch_size",
-            model_settings.get("batch_size", 32),
-        )
-    )
-
+    service_config = ModelServiceFactory.from_configs(
+        config=config,
+        models_config=models_config,
+    ).resolve("embedding")
     return EmbeddingSettings(
-        provider=provider,
-        model=str(model_settings.get("name", "")),
-        api_key_env=provider_settings.get("api_key_env"),
-        base_url=provider_settings.get("base_url"),
-        expected_dimensions=expected_dimensions,
-        batch_size=batch_size,
-        input_yuan_per_1k=float(model_settings.get("input_yuan_per_1k", 0.0)),
-        use_dimensions_param=bool(model_settings.get("use_dimensions_param", False)),
+        provider=service_config.provider.name,
+        model=service_config.model,
+        api_key_env=service_config.api_key_env,
+        base_url=service_config.base_url,
+        expected_dimensions=service_config.expected_dimensions,
+        batch_size=service_config.batch_size,
+        input_yuan_per_1k=service_config.pricing.input_yuan_per_1k,
+        use_dimensions_param=service_config.use_dimensions_param,
     )
 
 
@@ -175,3 +135,27 @@ def _hash_embedding(text: str, dimensions: int) -> list[float]:
     vector = [(byte / 255.0) - 0.5 for byte in raw[:dimensions]]
     norm = math.sqrt(sum(value * value for value in vector)) or 1.0
     return [value / norm for value in vector]
+
+
+def _service_config_from_embedding_settings(settings: EmbeddingSettings):
+    from loreweaver.model_services.config import (
+        ModelServiceConfig,
+        PricingConfig,
+        ProviderConfig,
+    )
+
+    return ModelServiceConfig(
+        service="embedding",
+        capability="embedding",
+        provider=ProviderConfig(
+            name=settings.provider,
+            adapter="openai_compatible",
+            api_key_env=settings.api_key_env,
+            base_url=settings.base_url,
+        ),
+        model=settings.model,
+        expected_dimensions=settings.expected_dimensions,
+        batch_size=settings.batch_size,
+        use_dimensions_param=settings.use_dimensions_param,
+        pricing=PricingConfig(input_yuan_per_1k=settings.input_yuan_per_1k),
+    )

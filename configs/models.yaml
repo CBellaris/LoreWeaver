@@ -1,47 +1,66 @@
 providers:
   openai:
+    adapter: "openai_compatible"
     api_key_env: "OPENAI_API_KEY"
   siliconflow:
+    adapter: "openai_compatible"
     api_key_env: "SILICONFLOW_API_KEY"
     base_url: "https://api.siliconflow.cn/v1"
   deepseek:
+    adapter: "openai_compatible"
     api_key_env: "DEEPSEEK_API_KEY"
     base_url: "https://api.deepseek.com"
 
-models:
-  extraction:
+model_profiles:
+  deepseek_v32_siliconflow:
+    capability: "chat"
     provider: "siliconflow"
-    name: "Pro/deepseek-ai/DeepSeek-V3.2"
-    batch_name: "deepseek-ai/DeepSeek-V3.1-Terminus"
+    model: "Pro/deepseek-ai/DeepSeek-V3.2"
     temperature: 0
-    input_yuan_per_1k: 0.002
-    output_yuan_per_1k: 0.003
-    batch_input_yuan_per_1k: 0.002
-    batch_output_yuan_per_1k: 0.006
     json_response_format: false
-  qa:
+    pricing:
+      input_yuan_per_1k: 0.002
+      output_yuan_per_1k: 0.003
+
+  qwen3_embedding_siliconflow:
+    capability: "embedding"
     provider: "siliconflow"
-    name: "Pro/deepseek-ai/DeepSeek-V3.2"
-    temperature: 0
-    input_yuan_per_1k: 0.002
-    output_yuan_per_1k: 0.003
-    json_response_format: false
-  embedding:
-    provider: "siliconflow"
-    name: "Qwen/Qwen3-Embedding-0.6B"
+    model: "Qwen/Qwen3-Embedding-0.6B"
     expected_dimensions: 1024
     batch_size: 32
-    input_yuan_per_1k: 0
     use_dimensions_param: false
-  reranker:
+    pricing:
+      input_yuan_per_1k: 0
+
+  qwen3_reranker_siliconflow:
+    capability: "rerank"
     provider: "siliconflow"
-    name: "Qwen/Qwen3-Reranker-0.6B"
-    fallback_name: "BAAI/bge-reranker-v2-m3"
+    model: "Qwen/Qwen3-Reranker-0.6B"
     enabled: false
     timeout_seconds: 30
+    fallback_name: "BAAI/bge-reranker-v2-m3"
+
+services:
+  extraction:
+    profile: "deepseek_v32_siliconflow"
+    batch_model: "deepseek-ai/DeepSeek-V3.1-Terminus"
+    batch_pricing:
+      input_yuan_per_1k: 0.002
+      output_yuan_per_1k: 0.006
+
+  qa:
+    profile: "deepseek_v32_siliconflow"
+
+  embedding:
+    profile: "qwen3_embedding_siliconflow"
+
+  reranker:
+    profile: "qwen3_reranker_siliconflow"
+
   eval_question_generator:
+    capability: "chat"
     provider: "deepseek"
-    name: "deepseek-v4-pro"
+    model: "deepseek-v4-pro"
     temperature: 0.2
     max_output_tokens: 384000
     json_response_format: false

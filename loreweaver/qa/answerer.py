@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +11,9 @@ from typing import Any, Protocol
 from loreweaver.config import AppConfig
 from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
 from loreweaver.logging import new_run_id
+from loreweaver.model_services import ChatRequest, ModelServiceFactory, resolve_model_service
+from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
+from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
 from loreweaver.progress import ProgressReporter
 from loreweaver.qa.prompts import build_answer_messages, build_repair_messages
 from loreweaver.retrieval.pipeline import retrieve_m16
@@ -51,20 +53,32 @@ class OpenAICompatibleAnswerClient:
         api_key_env: str,
         base_url: str | None = None,
     ) -> None:
-        api_key = os.environ.get(api_key_env)
-        if not api_key:
-            raise ValueError(f"Missing API key environment variable: {api_key_env}")
-        try:
-            from openai import OpenAI
-        except ImportError as error:
-            raise RuntimeError(
-                "The openai package is required for live QA calls. "
-                "Install optional M1 dependencies first."
-            ) from error
-
         self.provider = provider
         self.model = model
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        service_config = ModelServiceConfig(
+            service="qa",
+            capability="chat",
+            provider=ProviderConfig(
+                name=provider,
+                adapter="openai_compatible",
+                api_key_env=api_key_env,
+                base_url=base_url,
+            ),
+            model=model,
+        )
+        self._client = OpenAICompatibleClient(service_config)
+
+    @classmethod
+    def from_config(cls, service_config: ModelServiceConfig) -> "OpenAICompatibleAnswerClient":
+        api_key_env = service_config.api_key_env
+        if not api_key_env:
+            raise ValueError(f"Provider {service_config.provider.name} does not define api_key_env")
+        return cls(
+            provider=service_config.provider.name,
+            model=service_config.model,
+            api_key_env=api_key_env,
+            base_url=service_config.base_url,
+        )
 
     def complete(
         self,
@@ -72,20 +86,10 @@ class OpenAICompatibleAnswerClient:
         messages: list[dict[str, str]],
         temperature: float,
     ) -> tuple[str, dict[str, int]]:
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
+        result = self._client.complete(
+            ChatRequest(messages=messages, temperature=temperature),
         )
-        content = response.choices[0].message.content or ""
-        usage = {}
-        if response.usage is not None:
-            usage = {
-                "input_tokens": int(getattr(response.usage, "prompt_tokens", 0) or 0),
-                "output_tokens": int(getattr(response.usage, "completion_tokens", 0) or 0),
-                "total_tokens": int(getattr(response.usage, "total_tokens", 0) or 0),
-            }
-        return content, usage
+        return result.content, result.usage
 
 
 class MockAnswerClient:
@@ -214,11 +218,12 @@ def answer_evidence_pack(
     elif mock_answer:
         client = MockAnswerClient(model=f"mock::{qa_settings['model']}")
     else:
-        client = OpenAICompatibleAnswerClient(
-            provider=qa_settings["provider"],
-            model=qa_settings["model"],
-            api_key_env=qa_settings["api_key_env"],
-            base_url=qa_settings.get("base_url"),
+        client = OpenAICompatibleAnswerClient.from_config(
+            resolve_model_service(
+                models_config=models_config,
+                app_config=config,
+                service="qa",
+            )
         )
 
     messages = build_answer_messages(
@@ -361,18 +366,18 @@ def validate_answer_citations(
 
 
 def _qa_settings(*, config: AppConfig, models_config: AppConfig) -> dict[str, Any]:
-    qa_config = config.values.get("qa", {})
-    model_settings = models_config.values.get("models", {}).get("qa", {})
-    provider = str(model_settings.get("provider", "openai"))
-    provider_settings = models_config.values.get("providers", {}).get(provider, {})
-    model = str(qa_config.get("model") or model_settings.get("name", "gpt-4o"))
+    service_config = ModelServiceFactory.from_configs(
+        config=config,
+        models_config=models_config,
+    ).resolve("qa")
+    extra = service_config.extra or {}
     return {
-        "provider": provider,
-        "model": model,
-        "api_key_env": str(provider_settings.get("api_key_env", "OPENAI_API_KEY")),
-        "base_url": provider_settings.get("base_url"),
-        "temperature": float(qa_config.get("temperature", model_settings.get("temperature", 0))),
-        "require_citations": bool(qa_config.get("require_citations", True)),
+        "provider": service_config.provider.name,
+        "model": service_config.model or "gpt-4o",
+        "api_key_env": str(service_config.api_key_env or "OPENAI_API_KEY"),
+        "base_url": service_config.base_url,
+        "temperature": float(service_config.temperature or 0),
+        "require_citations": bool(extra.get("require_citations", True)),
     }
 
 
