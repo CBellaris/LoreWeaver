@@ -355,17 +355,19 @@ def build_center_span_clusters(
 def classify_cluster_type(span: Span) -> str:
     span_type = span.span_type.lower()
     combined = " ".join([span.summary, *span.topics, *span.entities])
-    if span_type == "location_lore" or _contains_any(combined, ("地点", "地理", "城堡", "遗迹")):
+    if _contains_any(combined, ("地点", "地理", "城堡", "遗迹")):
         return "location"
-    if span_type == "faction_lore" or _contains_any(combined, ("势力", "家族", "王国", "贵族")):
+    if _contains_any(combined, ("势力", "家族", "王国", "贵族")):
         return "faction"
-    if span_type == "power_rule" or _contains_any(combined, ("魔法", "能力", "规则", "精神")):
+    if _contains_any(combined, ("魔法", "能力", "规则", "精神")):
         return "power_system"
-    if span_type == "mystery_clue" or _contains_any(combined, ("异常", "伏笔", "秘密", "谜")):
+    if _contains_any(combined, ("异常", "伏笔", "秘密", "谜")):
         return "mystery"
-    if span_type in {"event", "scene_action"} or _contains_any(combined, ("历史", "事件", "战争")):
+    if span_type == "interaction":
+        return "character"
+    if span_type in {"progression", "transition"} or _contains_any(combined, ("历史", "事件", "战争")):
         return "history"
-    if span.entities or span_type in {"dialogue_exchange", "relationship_signal"}:
+    if span_type == "reflection" and span.entities:
         return "character"
     return "history"
 
@@ -627,12 +629,12 @@ def _stable_id(prefix: str, *parts: str) -> str:
 def _center_type_bonus(span: Span, cluster_type: str) -> float:
     span_type = span.span_type.lower()
     preferred_types = {
-        "character": {"dialogue_exchange", "relationship_signal"},
-        "faction": {"faction_lore"},
-        "location": {"location_lore"},
-        "power_system": {"power_rule"},
-        "history": {"event", "scene_action"},
-        "mystery": {"mystery_clue"},
+        "character": {"interaction", "reflection"},
+        "faction": {"exposition"},
+        "location": {"exposition"},
+        "power_system": {"exposition", "reflection"},
+        "history": {"progression", "transition", "mixed"},
+        "mystery": {"exposition", "reflection"},
     }
     if span_type in preferred_types.get(cluster_type, set()):
         return 1.0

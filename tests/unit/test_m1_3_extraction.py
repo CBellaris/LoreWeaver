@@ -164,7 +164,7 @@ class M13ExtractionTests(unittest.TestCase):
         first_payload = {
             "spans": [
                 {
-                    "span_type": "event",
+                    "span_type": "progression",
                     "summary": "开头信息被记录。",
                     "entities": [],
                     "topics": ["开头"],
@@ -173,7 +173,7 @@ class M13ExtractionTests(unittest.TestCase):
                     "end_anchor_quote": "开头信息",
                 },
                 {
-                    "span_type": "mystery_clue",
+                    "span_type": "exposition",
                     "summary": "第二条线索出现。",
                     "entities": [],
                     "topics": ["线索"],
@@ -186,7 +186,7 @@ class M13ExtractionTests(unittest.TestCase):
         retry_payload = {
             "spans": [
                 {
-                    "span_type": "event",
+                    "span_type": "progression",
                     "summary": "开头信息被记录。",
                     "entities": [],
                     "topics": ["开头"],
@@ -195,7 +195,7 @@ class M13ExtractionTests(unittest.TestCase):
                     "end_anchor_quote": "开头信息",
                 },
                 {
-                    "span_type": "mystery_clue",
+                    "span_type": "exposition",
                     "summary": "第二条线索出现。",
                     "entities": [],
                     "topics": ["线索"],
@@ -248,7 +248,7 @@ class M13ExtractionTests(unittest.TestCase):
             {
                 "spans": [
                     {
-                        "span_type": "scene_action",
+                        "span_type": "progression",
                         "summary": "瑞贝卡清点身边幸存者，确认当前只剩七人。",
                         "entities": ["瑞贝卡", "拜伦骑士", "赫蒂姑妈", "士兵"],
                         "topics": ["队伍构成", "幸存者"],
@@ -285,7 +285,7 @@ class M13ExtractionTests(unittest.TestCase):
         self.assertEqual(results[0].status, "located")
         self.assertIn("这七个人恐怕就是最后的幸存者", results[0].span.located_text)
 
-    def test_uncovered_text_merges_fragments_outside_located_spans(self) -> None:
+    def test_extract_window_absorbs_small_uncovered_fragments(self) -> None:
         text = "开头闲笔。主角发现古门。中间过渡。古门发光并显出符文。结尾闲笔。"
         window = CandidateWindow(
             window_id="doc_ch0001_win0001",
@@ -300,7 +300,7 @@ class M13ExtractionTests(unittest.TestCase):
             {
                 "spans": [
                     {
-                        "span_type": "event",
+                        "span_type": "progression",
                         "summary": "主角发现一扇古门。",
                         "entities": ["主角", "古门"],
                         "topics": ["发现"],
@@ -309,7 +309,7 @@ class M13ExtractionTests(unittest.TestCase):
                         "end_anchor_quote": "主角发现古门",
                     },
                     {
-                        "span_type": "mystery_clue",
+                        "span_type": "exposition",
                         "summary": "古门发光并显出符文。",
                         "entities": ["古门", "符文"],
                         "topics": ["伏笔"],
@@ -336,11 +336,66 @@ class M13ExtractionTests(unittest.TestCase):
 
         uncovered_text = build_uncovered_text(window, [result.span for result in results])
 
-        self.assertIn("开头闲笔", uncovered_text)
-        self.assertIn("中间过渡", uncovered_text)
-        self.assertIn("结尾闲笔", uncovered_text)
-        self.assertNotIn("主角发现古门", uncovered_text)
-        self.assertNotIn("古门发光并显出符文", uncovered_text)
+        self.assertEqual(uncovered_text, "")
+        self.assertIn("开头闲笔", results[0].span.located_text)
+        self.assertIn("中间过渡", results[0].span.located_text)
+        self.assertIn("结尾闲笔", results[1].span.located_text)
+
+    def test_uncovered_text_keeps_large_unlocated_fragments(self) -> None:
+        long_gap = "这是一段较长的未定位文本。" * 12
+        text = f"主角发现古门。{long_gap}古门发光并显出符文。"
+        window = CandidateWindow(
+            window_id="doc_ch0001_win0001",
+            document_id="doc",
+            chapter_id="doc_ch0001",
+            window_index=1,
+            window_start=100,
+            window_end=100 + len(text),
+            text=text,
+        )
+        raw_output = json.dumps(
+            {
+                "spans": [
+                    {
+                        "span_type": "progression",
+                        "summary": "主角发现一扇古门。",
+                        "entities": ["主角", "古门"],
+                        "topics": ["发现"],
+                        "salience_score": 0.6,
+                        "start_anchor_quote": "主角发现古门",
+                        "end_anchor_quote": "主角发现古门",
+                    },
+                    {
+                        "span_type": "exposition",
+                        "summary": "古门发光并显出符文。",
+                        "entities": ["古门", "符文"],
+                        "topics": ["伏笔"],
+                        "salience_score": 0.7,
+                        "start_anchor_quote": "古门发光",
+                        "end_anchor_quote": "显出符文",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        )
+        results = extract_window(
+            window,
+            client=StaticJsonClient(raw_output),
+            model="mock",
+            temperature=0,
+            retry_policy=RetryPolicy(max_retries=0),
+            anchor_min_chars=4,
+            anchor_max_chars=80,
+            store_located_text=True,
+            fuzzy_threshold=0.86,
+            token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
+        )
+
+        uncovered_text = build_uncovered_text(window, [result.span for result in results])
+
+        self.assertIn(long_gap, uncovered_text)
+        self.assertNotIn(long_gap, results[0].span.located_text)
+        self.assertNotIn(long_gap, results[1].span.located_text)
 
     def test_extract_window_with_mock_returns_multiple_located_spans_and_cost(self) -> None:
         text = "第一章 A\n" + "高文在陌生的大厅中醒来，并意识到这座城堡隐藏着旧时代留下的秘密。" * 3
@@ -417,7 +472,7 @@ class M13ExtractionTests(unittest.TestCase):
         raw_payload = {
             "spans": [
                 {
-                    "span_type": "event",
+                    "span_type": "progression",
                     "summary": "高文醒来并察觉大厅中的魔法阵。",
                     "entities": ["高文", "魔法阵"],
                     "topics": ["苏醒", "魔法"],
@@ -475,7 +530,7 @@ class M13ExtractionTests(unittest.TestCase):
             bad_payload = {
                 "spans": [
                     {
-                        "span_type": "event",
+                        "span_type": "progression",
                         "summary": "高文醒来并察觉大厅中的魔法阵。",
                         "entities": ["高文", "魔法阵"],
                         "topics": ["苏醒", "魔法"],
@@ -541,7 +596,7 @@ class M13ExtractionTests(unittest.TestCase):
             bad_locator_payload = {
                 "spans": [
                     {
-                        "span_type": "event",
+                        "span_type": "progression",
                         "summary": "高文醒来并察觉大厅中的魔法阵。",
                         "entities": ["高文", "魔法阵"],
                         "topics": ["苏醒", "魔法"],

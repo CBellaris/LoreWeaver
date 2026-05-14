@@ -16,15 +16,12 @@ except ImportError:  # pragma: no cover - exercised in minimal bootstrap envs.
 
 
 SPAN_TYPES = {
-    "dialogue_exchange",
-    "relationship_signal",
-    "location_lore",
-    "faction_lore",
-    "power_rule",
-    "event",
-    "mystery_clue",
-    "object_lore",
-    "scene_action",
+    "progression",
+    "interaction",
+    "exposition",
+    "reflection",
+    "transition",
+    "mixed",
     "other",
 }
 

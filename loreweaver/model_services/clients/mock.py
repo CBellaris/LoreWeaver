@@ -155,7 +155,7 @@ def extraction_payload_from_messages(messages: list[dict[str, str]]) -> tuple[st
     payload = {
         "spans": [
             {
-                "span_type": "event",
+                "span_type": "progression",
                 "summary": compact[:100] or "空窗口",
                 "entities": [],
                 "topics": ["mock_extraction"],
@@ -165,7 +165,7 @@ def extraction_payload_from_messages(messages: list[dict[str, str]]) -> tuple[st
                 "key_quote": first_start,
             },
             {
-                "span_type": "mystery_clue",
+                "span_type": "exposition",
                 "summary": compact[40:140] or compact[:100] or "空窗口",
                 "entities": [],
                 "topics": ["mock_extraction"],
