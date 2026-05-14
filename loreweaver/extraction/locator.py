@@ -64,20 +64,6 @@ def locate_quote(
     )
 
 
-def quote_constraints_ok(
-    quote: str,
-    *,
-    min_chars: int = 30,
-    max_chars: int = 160,
-) -> tuple[bool, str | None]:
-    quote_length = len(quote.strip())
-    if quote_length < min_chars:
-        return False, f"quote is shorter than {min_chars} chars"
-    if quote_length > max_chars:
-        return False, f"quote is longer than {max_chars} chars"
-    return True, None
-
-
 def anchor_constraints_ok(
     anchor: str,
     *,
@@ -99,10 +85,8 @@ def locate_span_anchors(
     start_anchor_quote: str,
     end_anchor_quote: str,
     fuzzy_threshold: float = 0.86,
-    min_span_chars: int = 80,
-    max_span_chars: int = 800,
 ) -> LocatorResult:
-    """Locate a micro-topic span with start/end anchors inside a window."""
+    """Locate a span interval from ordered start/end anchors inside a window."""
     start_anchor = start_anchor_quote.strip()
     end_anchor = end_anchor_quote.strip()
     if not start_anchor:
@@ -128,14 +112,12 @@ def locate_span_anchors(
         return LocatorResult("failed", None, None, 0.0, "anchors", [], "end anchor not found")
 
     interval_candidates: list[LocatorCandidate] = []
-    nearest_rejected: LocatorCandidate | None = None
     for start_candidate in start_candidates:
         for end_candidate in end_candidates:
             if end_candidate.end_idx < start_candidate.start_idx:
                 continue
             span_start = start_candidate.start_idx
             span_end = end_candidate.end_idx
-            span_length = span_end - span_start
             confidence = round((start_candidate.confidence + end_candidate.confidence) / 2, 4)
             strategy = f"anchors:{start_candidate.strategy}+{end_candidate.strategy}"
             matched_text = window.text[
@@ -148,29 +130,10 @@ def locate_span_anchors(
                 strategy=strategy,
                 matched_text=matched_text,
             )
-            if min_span_chars <= span_length <= max_span_chars:
-                interval_candidates.append(candidate)
-            elif nearest_rejected is None or _span_length_penalty(
-                span_length,
-                min_span_chars=min_span_chars,
-                max_span_chars=max_span_chars,
-            ) < _span_length_penalty(
-                nearest_rejected.end_idx - nearest_rejected.start_idx,
-                min_span_chars=min_span_chars,
-                max_span_chars=max_span_chars,
-            ):
-                nearest_rejected = candidate
+            interval_candidates.append(candidate)
 
     if interval_candidates:
         return _select_best_interval_candidate(window, interval_candidates)
-
-    if nearest_rejected is not None:
-        length = nearest_rejected.end_idx - nearest_rejected.start_idx
-        reason = (
-            f"anchor interval length {length} is outside "
-            f"[{min_span_chars}, {max_span_chars}] chars"
-        )
-        return LocatorResult("failed", None, None, 0.0, "anchors", [nearest_rejected], reason)
 
     return LocatorResult(
         status="failed",
@@ -378,15 +341,3 @@ def _select_best_interval_candidate(
         candidates=sorted_candidates,
     )
 
-
-def _span_length_penalty(
-    length: int,
-    *,
-    min_span_chars: int,
-    max_span_chars: int,
-) -> int:
-    if length < min_span_chars:
-        return min_span_chars - length
-    if length > max_span_chars:
-        return length - max_span_chars
-    return 0

@@ -340,7 +340,7 @@ def build_center_span_clusters(
             center_span_id=center.span_id,
             cluster_name=_cluster_name(cluster_type, center, [member.span for member in members]),
             cluster_type=cluster_type,
-            micro_summary=_cluster_summary(cluster_type, center, [member.span for member in members]),
+            summary=_cluster_summary(cluster_type, center, [member.span for member in members]),
             member_span_ids=[member.span.span_id for member in members],
             confidence=round(_cluster_confidence(members), 4),
             status="active",
@@ -354,7 +354,7 @@ def build_center_span_clusters(
 
 def classify_cluster_type(span: Span) -> str:
     span_type = span.span_type.lower()
-    combined = " ".join([span.micro_summary, *span.topics, *span.entities])
+    combined = " ".join([span.summary, *span.topics, *span.entities])
     if span_type == "location_lore" or _contains_any(combined, ("地点", "地理", "城堡", "遗迹")):
         return "location"
     if span_type == "faction_lore" or _contains_any(combined, ("势力", "家族", "王国", "贵族")):
@@ -533,14 +533,14 @@ def _cluster_name(cluster_type: str, center: Span, members: list[Span]) -> str:
         return f"{label}：{representative_entity}"
     if topic_counts:
         return f"{label}：{topic_counts.most_common(1)[0][0]}"
-    return f"{label}：{center.micro_summary}"
+    return f"{label}：{center.summary}"
 
 
 def _cluster_summary(cluster_type: str, center: Span, members: list[Span]) -> str:
     topics = Counter(topic for span in members for topic in span.topics).most_common(3)
-    topic_text = "、".join(topic for topic, _ in topics) if topics else center.micro_summary
+    topic_text = "、".join(topic for topic, _ in topics) if topics else center.summary
     label = CLUSTER_TYPE_LABELS.get(cluster_type, cluster_type)
-    return f"{label}聚合，以中心 Span「{center.micro_summary}」为锚点，成员主要覆盖：{topic_text}。"
+    return f"{label}聚合，以中心 Span「{center.summary}」为锚点，成员主要覆盖：{topic_text}。"
 
 
 def _cluster_confidence(members: list[MemberCandidate]) -> float:
@@ -599,14 +599,14 @@ def _build_report(
                 "center_span_id": cluster.center_span_id,
                 "member_count": len(cluster.member_span_ids),
                 "confidence": cluster.confidence,
-                "summary": cluster.micro_summary,
+                "summary": cluster.summary,
                 "members": [
                     {
                         "span_id": member.span.span_id,
                         "score": member.score,
                         "component_scores": member.component_scores,
                         "reasons": member.reasons,
-                        "micro_summary": member.span.micro_summary,
+                        "summary": member.span.summary,
                         "span_type": member.span.span_type,
                         "chapter_id": member.span.chapter_id,
                         "range": [member.span.span_start_idx, member.span.span_end_idx],
@@ -807,7 +807,7 @@ def _lexical_overlap(center: Span, span: Span) -> int:
 
 
 def _span_text(span: Span) -> str:
-    return "\n".join([span.micro_summary, *span.entities, *span.topics])
+    return "\n".join([span.summary, *span.entities, *span.topics])
 
 
 def _chapter_number(chapter_id: str) -> int:
@@ -843,7 +843,7 @@ def list_graph_clusters(
                 "center_span_id": cluster.center_span_id,
                 "member_count": len(cluster.member_span_ids),
                 "confidence": cluster.confidence,
-                "summary": cluster.micro_summary,
+                "summary": cluster.summary,
                 "members": [
                     _span_preview(spans_by_id[span_id])
                     for span_id in cluster.member_span_ids
@@ -859,7 +859,7 @@ def _span_preview(span: Span) -> dict[str, Any]:
     return {
         "span_id": span.span_id,
         "chapter_id": span.chapter_id,
-        "micro_summary": span.micro_summary,
+        "summary": span.summary,
         "span_type": span.span_type,
         "salience_score": span.salience_score,
         "range": [span.span_start_idx, span.span_end_idx],

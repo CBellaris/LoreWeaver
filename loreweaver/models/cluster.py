@@ -13,7 +13,7 @@ class CenterSpanCluster:
     center_span_id: str
     cluster_name: str
     cluster_type: str
-    micro_summary: str
+    summary: str
     member_span_ids: list[str]
     confidence: float
     status: str

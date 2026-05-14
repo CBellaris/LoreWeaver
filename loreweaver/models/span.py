@@ -16,14 +16,13 @@ class Span:
     window_start: int
     window_end: int
     span_type: str
-    micro_summary: str
+    summary: str
     entities: list[str]
     topics: list[str]
     salience_score: float
     start_anchor_quote: str
     end_anchor_quote: str
     key_quote: str
-    overlap_reason: str
     span_start_idx: int | None
     span_end_idx: int | None
     located_text: str

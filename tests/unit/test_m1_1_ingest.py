@@ -55,7 +55,6 @@ class M11IngestTests(unittest.TestCase):
                     "ingest": {
                         "normalize_newlines": True,
                         "remove_extra_blank_lines": True,
-                        "fallback_chapter_chars": 1000,
                         "chapter_patterns": [
                             r"^第[一二三四五六七八九十百千万零〇两0-9]+章",
                             r"^[一二三四五六七八九十百千万零〇两0-9]+章",
@@ -87,6 +86,22 @@ class M11IngestTests(unittest.TestCase):
 
             self.assertEqual(document_count, 1)
             self.assertEqual(chapter_count, 2)
+
+    def test_split_without_headings_uses_one_whole_document_fallback_chapter(self) -> None:
+        text = "无标题正文\n" + ("内容" * 400)
+
+        chapters, report = split_chapters(
+            text,
+            document_id="doc_fallback",
+            chapter_patterns=[r"^第[一二三四五六七八九十百千万零〇两0-9]+章"],
+        )
+
+        self.assertEqual(report.strategy, "whole_document_fallback")
+        self.assertEqual(len(chapters), 1)
+        self.assertEqual(chapters[0].chapter_id, "doc_fallback_ch0000")
+        self.assertEqual(chapters[0].chapter_index, 0)
+        self.assertEqual(chapters[0].start_idx, 0)
+        self.assertEqual(chapters[0].end_idx, len(text))
 
 
 if __name__ == "__main__":

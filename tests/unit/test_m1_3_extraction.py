@@ -11,8 +11,6 @@ from loreweaver.extraction.extractor import (
     _apply_batch_outputs,
     _batch_output_from_line,
     _build_batch_request_line,
-    _repair_failed_spans_with_relaxed_bounds,
-    _resolve_repair_span_bounds,
     _results_from_raw_window_output,
     build_uncovered_text,
     estimate_cost,
@@ -61,17 +59,45 @@ class SequencedJsonClient:
 
 
 class M13ExtractionTests(unittest.TestCase):
-    def test_repair_span_bounds_default_to_relaxed_range(self) -> None:
-        self.assertEqual(
-            _resolve_repair_span_bounds(span_chars_min=None, span_chars_max=None),
-            (1, 2000),
-        )
+    def test_initialize_extraction_tables_rebuilds_stale_span_schema(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(Path(tmpdir) / "test.sqlite3")
+            store.initialize()
+            with store.connect() as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE spans (
+                        span_id TEXT PRIMARY KEY,
+                        micro_summary TEXT NOT NULL,
+                        overlap_reason TEXT NOT NULL
+                    );
 
-    def test_repair_span_bounds_validate_explicit_values(self) -> None:
-        with self.assertRaises(ValueError):
-            _resolve_repair_span_bounds(span_chars_min=0, span_chars_max=2000)
-        with self.assertRaises(ValueError):
-            _resolve_repair_span_bounds(span_chars_min=2000, span_chars_max=1)
+                    CREATE TABLE locator_candidates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        span_id TEXT NOT NULL
+                    );
+                    """
+                )
+
+            store.initialize_extraction_tables()
+
+            with store.connect() as connection:
+                columns = {
+                    str(row["name"])
+                    for row in connection.execute("PRAGMA table_info(spans)").fetchall()
+                }
+                locator_exists = connection.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table' AND name = 'locator_candidates'
+                    """
+                ).fetchone()
+
+            self.assertIn("summary", columns)
+            self.assertNotIn("micro_summary", columns)
+            self.assertNotIn("overlap_reason", columns)
+            self.assertIsNotNone(locator_exists)
 
     def test_locator_handles_exact_normalized_and_fuzzy_quotes(self) -> None:
         window = CandidateWindow(
@@ -94,7 +120,7 @@ class M13ExtractionTests(unittest.TestCase):
         self.assertEqual(fuzzy.status, "located")
         self.assertGreaterEqual(fuzzy.confidence, 0.86)
 
-    def test_anchor_locator_returns_micro_span_interval(self) -> None:
+    def test_anchor_locator_returns_ordered_span_interval(self) -> None:
         text = (
             "主角B一进入房间，主角A便开口说道：“今天天气不错。"
             "XX森林你知道吗？那里有古老遗迹，也有危险的雾。”"
@@ -113,139 +139,17 @@ class M13ExtractionTests(unittest.TestCase):
             window,
             start_anchor_quote="主角B一进入房间，主角A便开口说道",
             end_anchor_quote="也有危险的雾。”",
-            min_span_chars=20,
-            max_span_chars=120,
         )
         location = locate_span_anchors(
             window,
             start_anchor_quote="XX森林你知道吗？",
             end_anchor_quote="也有危险的雾",
-            min_span_chars=10,
-            max_span_chars=60,
         )
 
         self.assertEqual(relationship.status, "located")
         self.assertEqual(location.status, "located")
         self.assertLessEqual(relationship.start_idx, location.start_idx)
         self.assertGreaterEqual(relationship.end_idx, location.end_idx)
-
-    def test_anchor_locator_rejects_out_of_range_intervals(self) -> None:
-        short_text = "赫蒂探测到魔力反应。"
-        short_window = CandidateWindow(
-            window_id="w_short",
-            document_id="doc",
-            chapter_id="ch1",
-            window_index=1,
-            window_start=10,
-            window_end=10 + len(short_text),
-            text=short_text,
-        )
-        long_text = "起点。" + ("中间说明。" * 20) + "终点。"
-        long_window = CandidateWindow(
-            window_id="w_long",
-            document_id="doc",
-            chapter_id="ch1",
-            window_index=2,
-            window_start=100,
-            window_end=100 + len(long_text),
-            text=long_text,
-        )
-
-        short_result = locate_span_anchors(
-            short_window,
-            start_anchor_quote="赫蒂探测",
-            end_anchor_quote="魔力反应",
-            min_span_chars=30,
-            max_span_chars=800,
-        )
-        long_result = locate_span_anchors(
-            long_window,
-            start_anchor_quote="起点",
-            end_anchor_quote="终点",
-            min_span_chars=4,
-            max_span_chars=20,
-        )
-
-        self.assertEqual(short_result.status, "failed")
-        self.assertIn("outside", short_result.failure_reason or "")
-        self.assertEqual(long_result.status, "failed")
-        self.assertIn("outside", long_result.failure_reason or "")
-
-    def test_repair_failed_accepts_existing_span_with_relaxed_bounds(self) -> None:
-        with TemporaryDirectory() as tmpdir:
-            text = "赫蒂探测到魔力反应。"
-            window = CandidateWindow(
-                window_id="doc_ch0001_win0001",
-                document_id="doc",
-                chapter_id="doc_ch0001",
-                window_index=1,
-                window_start=0,
-                window_end=len(text),
-                text=text,
-            )
-            raw_output = json.dumps(
-                {
-                    "spans": [
-                        {
-                            "span_type": "event",
-                            "micro_summary": "赫蒂探测到魔力反应。",
-                            "entities": ["赫蒂"],
-                            "topics": ["魔力"],
-                            "salience_score": 0.5,
-                            "start_anchor_quote": "赫蒂探测",
-                            "end_anchor_quote": "魔力反应",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            )
-            results = _results_from_raw_window_output(
-                window,
-                raw_output=raw_output,
-                attempts=1,
-                usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-                token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
-                max_spans_per_window=12,
-                anchor_min_chars=4,
-                anchor_max_chars=80,
-                target_span_chars_min=30,
-                target_span_chars_max=800,
-                store_located_text=True,
-                fuzzy_threshold=0.86,
-            )
-            self.assertEqual(results[0].status, "failed")
-
-            store = SQLiteStore(Path(tmpdir) / "test.sqlite3")
-            store.initialize()
-            store.initialize_extraction_tables()
-            store.upsert_span(results[0].span)
-            store.insert_extraction_failure(
-                window_id=window.window_id,
-                span_id=results[0].span.span_id,
-                stage="locator",
-                reason=results[0].failure_reason or "failed",
-                attempts=1,
-                raw_output=raw_output,
-            )
-
-            summary = _repair_failed_spans_with_relaxed_bounds(
-                store=store,
-                document_id=window.document_id,
-                windows=[window],
-                min_span_chars=1,
-                max_span_chars=800,
-                anchor_min_chars=4,
-                anchor_max_chars=80,
-                store_located_text=True,
-                store_uncovered_text=True,
-                fuzzy_threshold=0.86,
-                progress=None,
-            )
-
-            repaired = store.get_span(results[0].span.span_id)
-            self.assertEqual(summary["repaired_count"], 1)
-            self.assertEqual(repaired.locator_status, "located")
-            self.assertIn("魔力反应", repaired.located_text)
 
     def test_extract_window_retries_whole_window_for_anchor_lookup_failures(self) -> None:
         text = "开头信息。第二条线索就在这里。结尾信息。"
@@ -262,7 +166,7 @@ class M13ExtractionTests(unittest.TestCase):
             "spans": [
                 {
                     "span_type": "event",
-                    "micro_summary": "开头信息被记录。",
+                    "summary": "开头信息被记录。",
                     "entities": [],
                     "topics": ["开头"],
                     "salience_score": 0.4,
@@ -271,7 +175,7 @@ class M13ExtractionTests(unittest.TestCase):
                 },
                 {
                     "span_type": "mystery_clue",
-                    "micro_summary": "第二条线索出现。",
+                    "summary": "第二条线索出现。",
                     "entities": [],
                     "topics": ["线索"],
                     "salience_score": 0.6,
@@ -284,7 +188,7 @@ class M13ExtractionTests(unittest.TestCase):
             "spans": [
                 {
                     "span_type": "event",
-                    "micro_summary": "开头信息被记录。",
+                    "summary": "开头信息被记录。",
                     "entities": [],
                     "topics": ["开头"],
                     "salience_score": 0.4,
@@ -293,7 +197,7 @@ class M13ExtractionTests(unittest.TestCase):
                 },
                 {
                     "span_type": "mystery_clue",
-                    "micro_summary": "第二条线索出现。",
+                    "summary": "第二条线索出现。",
                     "entities": [],
                     "topics": ["线索"],
                     "salience_score": 0.6,
@@ -315,12 +219,8 @@ class M13ExtractionTests(unittest.TestCase):
             model="mock",
             temperature=0,
             retry_policy=RetryPolicy(max_retries=1),
-            min_spans_per_window=1,
-            max_spans_per_window=12,
             anchor_min_chars=4,
             anchor_max_chars=80,
-            target_span_chars_min=4,
-            target_span_chars_max=80,
             store_located_text=True,
             fuzzy_threshold=0.86,
             token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
@@ -350,7 +250,7 @@ class M13ExtractionTests(unittest.TestCase):
                 "spans": [
                     {
                         "span_type": "scene_action",
-                        "micro_summary": "瑞贝卡清点身边幸存者，确认当前只剩七人。",
+                        "summary": "瑞贝卡清点身边幸存者，确认当前只剩七人。",
                         "entities": ["瑞贝卡", "拜伦骑士", "赫蒂姑妈", "士兵"],
                         "topics": ["队伍构成", "幸存者"],
                         "salience_score": 0.5,
@@ -364,7 +264,6 @@ class M13ExtractionTests(unittest.TestCase):
                             "眼下这七个人恐怕就是最后的幸存者了。"
                         ),
                         "key_quote": "这七个人恐怕就是最后的幸存者了",
-                        "overlap_reason": "",
                     }
                 ]
             },
@@ -377,12 +276,8 @@ class M13ExtractionTests(unittest.TestCase):
             model="mock",
             temperature=0,
             retry_policy=RetryPolicy(max_retries=0),
-            min_spans_per_window=1,
-            max_spans_per_window=12,
             anchor_min_chars=8,
             anchor_max_chars=80,
-            target_span_chars_min=20,
-            target_span_chars_max=220,
             store_located_text=True,
             fuzzy_threshold=0.86,
             token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
@@ -407,7 +302,7 @@ class M13ExtractionTests(unittest.TestCase):
                 "spans": [
                     {
                         "span_type": "event",
-                        "micro_summary": "主角发现一扇古门。",
+                        "summary": "主角发现一扇古门。",
                         "entities": ["主角", "古门"],
                         "topics": ["发现"],
                         "salience_score": 0.6,
@@ -416,7 +311,7 @@ class M13ExtractionTests(unittest.TestCase):
                     },
                     {
                         "span_type": "mystery_clue",
-                        "micro_summary": "古门发光并显出符文。",
+                        "summary": "古门发光并显出符文。",
                         "entities": ["古门", "符文"],
                         "topics": ["伏笔"],
                         "salience_score": 0.7,
@@ -433,12 +328,8 @@ class M13ExtractionTests(unittest.TestCase):
             model="mock",
             temperature=0,
             retry_policy=RetryPolicy(max_retries=0),
-            min_spans_per_window=1,
-            max_spans_per_window=12,
             anchor_min_chars=4,
             anchor_max_chars=80,
-            target_span_chars_min=4,
-            target_span_chars_max=80,
             store_located_text=True,
             fuzzy_threshold=0.86,
             token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
@@ -470,12 +361,8 @@ class M13ExtractionTests(unittest.TestCase):
             model="mock",
             temperature=0,
             retry_policy=RetryPolicy(max_retries=0),
-            min_spans_per_window=2,
-            max_spans_per_window=12,
             anchor_min_chars=8,
             anchor_max_chars=80,
-            target_span_chars_min=20,
-            target_span_chars_max=180,
             store_located_text=True,
             fuzzy_threshold=0.86,
             token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
@@ -505,12 +392,8 @@ class M13ExtractionTests(unittest.TestCase):
             window=window,
             model="deepseek-ai/DeepSeek-V3.1-Terminus",
             temperature=0,
-            min_spans_per_window=1,
-            max_spans_per_window=3,
             anchor_min_chars=4,
             anchor_max_chars=80,
-            target_span_chars_min=4,
-            target_span_chars_max=80,
             json_response_format=True,
         )
 
@@ -536,7 +419,7 @@ class M13ExtractionTests(unittest.TestCase):
             "spans": [
                 {
                     "span_type": "event",
-                    "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                    "summary": "高文醒来并察觉大厅中的魔法阵。",
                     "entities": ["高文", "魔法阵"],
                     "topics": ["苏醒", "魔法"],
                     "salience_score": 0.6,
@@ -567,11 +450,8 @@ class M13ExtractionTests(unittest.TestCase):
             attempts=1,
             usage=output.usage,
             token_price=TokenPrice(input_yuan_per_1k=0.002, output_yuan_per_1k=0.003),
-            max_spans_per_window=12,
             anchor_min_chars=4,
             anchor_max_chars=80,
-            target_span_chars_min=4,
-            target_span_chars_max=120,
             store_located_text=True,
             fuzzy_threshold=0.86,
         )
@@ -597,7 +477,7 @@ class M13ExtractionTests(unittest.TestCase):
                 "spans": [
                     {
                         "span_type": "event",
-                        "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                        "summary": "高文醒来并察觉大厅中的魔法阵。",
                         "entities": ["高文", "魔法阵"],
                         "topics": ["苏醒", "魔法"],
                         "salience_score": 0.6,
@@ -632,11 +512,8 @@ class M13ExtractionTests(unittest.TestCase):
                 store=store,
                 windows=[window],
                 outputs=[output],
-                max_spans_per_window=12,
                 anchor_min_chars=4,
                 anchor_max_chars=80,
-                target_span_chars_min=4,
-                target_span_chars_max=120,
                 store_located_text=True,
                 store_uncovered_text=True,
                 fuzzy_threshold=0.86,
@@ -666,7 +543,7 @@ class M13ExtractionTests(unittest.TestCase):
                 "spans": [
                     {
                         "span_type": "event",
-                        "micro_summary": "高文醒来并察觉大厅中的魔法阵。",
+                        "summary": "高文醒来并察觉大厅中的魔法阵。",
                         "entities": ["高文", "魔法阵"],
                         "topics": ["苏醒", "魔法"],
                         "salience_score": 0.6,
@@ -708,11 +585,8 @@ class M13ExtractionTests(unittest.TestCase):
                 store=store,
                 windows=[window],
                 outputs=[output],
-                max_spans_per_window=12,
                 anchor_min_chars=4,
                 anchor_max_chars=80,
-                target_span_chars_min=4,
-                target_span_chars_max=120,
                 store_located_text=True,
                 store_uncovered_text=True,
                 fuzzy_threshold=0.86,
@@ -745,27 +619,25 @@ class M13ExtractionTests(unittest.TestCase):
                     "ingest": {
                         "normalize_newlines": True,
                         "remove_extra_blank_lines": True,
-                        "fallback_chapter_chars": 1000,
                         "chapter_patterns": [
                             r"^第[一二三四五六七八九十百千万零〇两0-9]+章",
                         ],
                     },
                     "window": {
+                        "mode": "auto",
                         "size_chars": 500,
                         "overlap_ratio": 0.2,
                         "min_chars": 120,
                         "max_chars": 800,
                     },
                     "extraction": {
-                        "model": "mock",
-                        "temperature": 0,
+                        "model": "stale-default-model",
+                        "temperature": 1,
                         "max_retries": 0,
-                        "target_span_chars_min": 20,
-                        "target_span_chars_max": 700,
                         "anchor_min_chars": 8,
                         "anchor_max_chars": 80,
-                        "input_yuan_per_1k": 0.002,
-                        "output_yuan_per_1k": 0.003,
+                        "input_yuan_per_1k": 999,
+                        "output_yuan_per_1k": 999,
                     },
                     "locator": {"fuzzy_threshold": 0.86},
                 },
@@ -783,8 +655,8 @@ class M13ExtractionTests(unittest.TestCase):
                             "provider": "mock",
                             "name": "mock",
                             "temperature": 0,
-                            "input_yuan_per_1k": 0.002,
-                            "output_yuan_per_1k": 0.003,
+                            "input_yuan_per_1k": 0,
+                            "output_yuan_per_1k": 0,
                         }
                     },
                 },
@@ -814,6 +686,8 @@ class M13ExtractionTests(unittest.TestCase):
 
             self.assertTrue(Path(extraction_report["report_path"]).exists())
             self.assertEqual(extraction_report["window_count"], 2)
+            self.assertEqual(extraction_report["model"], "mock")
+            self.assertEqual(extraction_report["estimated_cost_yuan"], 0)
             self.assertEqual(extraction_report["span_count"], 4)
             self.assertEqual(extraction_report["locator_success_count"], 4)
 
@@ -838,7 +712,7 @@ class M13ExtractionTests(unittest.TestCase):
             self.assertEqual(report_count, 1)
             self.assertGreaterEqual(candidate_count, 4)
             self.assertGreaterEqual(uncovered_count, 1)
-            self.assertTrue(all(span.micro_summary for span in spans))
+            self.assertTrue(all(span.summary for span in spans))
             self.assertTrue(all(span.located_text for span in spans))
 
             status_report = list_extraction_windows(
@@ -848,7 +722,6 @@ class M13ExtractionTests(unittest.TestCase):
             )
             self.assertEqual(status_report["windows"][0]["status"], "extracted")
             self.assertEqual(status_report["windows"][1]["status"], "extracted")
-            self.assertEqual(status_report["windows"][2]["status"], "pending")
 
             range_report = extract_document_windows(
                 config=config,
@@ -856,7 +729,7 @@ class M13ExtractionTests(unittest.TestCase):
                 models_config=models_config,
                 run_id="extract_range_test",
                 document_id=ingest_report["document"]["document_id"],
-                window_ranges=["3-3"],
+                window_ranges=["2-2"],
                 mock=True,
             )
             self.assertEqual(range_report["window_count"], 1)
@@ -879,7 +752,7 @@ class M13ExtractionTests(unittest.TestCase):
                 ingest_report["document"]["document_id"],
                 located_only=True,
             )
-            self.assertEqual(len(final_spans), 6)
+            self.assertEqual(len(final_spans), 4)
 
     def test_cost_estimate_uses_configured_prices(self) -> None:
         cost = estimate_cost(

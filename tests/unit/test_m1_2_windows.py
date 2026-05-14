@@ -26,6 +26,7 @@ class M12WindowTests(unittest.TestCase):
             overlap_ratio=0.2,
             min_window_chars=300,
             max_window_chars=1400,
+            window_mode="sliding",
         )
 
         self.assertEqual(report.total_chapters, 2)
@@ -51,6 +52,7 @@ class M12WindowTests(unittest.TestCase):
             overlap_ratio=0.2,
             min_window_chars=300,
             max_window_chars=1400,
+            window_mode="sliding",
         )
 
         self.assertEqual(len(windows), 3)
@@ -58,7 +60,7 @@ class M12WindowTests(unittest.TestCase):
         self.assertGreaterEqual(windows[-1].char_count, 300)
         self.assertEqual(report.short_window_count, 0)
 
-    def test_split_by_chapter_uses_one_window_per_natural_chapter(self) -> None:
+    def test_auto_mode_uses_one_window_per_natural_chapter(self) -> None:
         text = "第一章 A\n" + ("甲" * 2500) + "\n第二章 B\n" + ("乙" * 900)
         chapters = [
             Chapter("doc_test_ch0001", "doc_test", 1, "第一章 A", 0, 2507, 2507),
@@ -73,10 +75,10 @@ class M12WindowTests(unittest.TestCase):
             overlap_ratio=0.2,
             min_window_chars=300,
             max_window_chars=1400,
-            split_by_chapter=True,
         )
 
-        self.assertEqual(report.split_mode, "chapter")
+        self.assertEqual(report.requested_mode, "auto")
+        self.assertEqual(report.split_mode, "by_chapter")
         self.assertEqual(report.total_windows, 2)
         self.assertEqual(report.boundary_warnings, [])
         self.assertEqual([window.window_index for window in windows], [1, 1])
@@ -102,13 +104,13 @@ class M12WindowTests(unittest.TestCase):
                     "ingest": {
                         "normalize_newlines": True,
                         "remove_extra_blank_lines": True,
-                        "fallback_chapter_chars": 1000,
                         "chapter_patterns": [
                             r"^第[一二三四五六七八九十百千万零〇两0-9]+章",
                             r"^[一二三四五六七八九十百千万零〇两0-9]+章",
                         ],
                     },
                     "window": {
+                        "mode": "auto",
                         "size_chars": 1000,
                         "overlap_ratio": 0.2,
                         "min_chars": 300,
@@ -152,7 +154,7 @@ class M12WindowTests(unittest.TestCase):
             self.assertEqual(persisted_windows[0].window_index, 1)
             self.assertEqual(report_count, 1)
 
-    def test_windows_pipeline_can_persist_chapter_windows(self) -> None:
+    def test_windows_pipeline_uses_auto_chapter_windows_for_detected_chapters(self) -> None:
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             source = root / "raw.txt"
@@ -169,13 +171,13 @@ class M12WindowTests(unittest.TestCase):
                     "ingest": {
                         "normalize_newlines": True,
                         "remove_extra_blank_lines": True,
-                        "fallback_chapter_chars": 1000,
                         "chapter_patterns": [
                             r"^第[一二三四五六七八九十百千万零〇两0-9]+章",
                             r"^[一二三四五六七八九十百千万零〇两0-9]+章",
                         ],
                     },
                     "window": {
+                        "mode": "auto",
                         "size_chars": 1000,
                         "overlap_ratio": 0.2,
                         "min_chars": 300,
@@ -199,11 +201,30 @@ class M12WindowTests(unittest.TestCase):
                 storage_config=storage_config,
                 run_id="windows_test",
                 document_id=ingest_report["document"]["document_id"],
-                split_by_chapter=True,
             )
 
-            self.assertEqual(windows_report["window_split"]["split_mode"], "chapter")
+            self.assertEqual(windows_report["window_split"]["requested_mode"], "auto")
+            self.assertEqual(windows_report["window_split"]["split_mode"], "by_chapter")
             self.assertEqual(windows_report["window_split"]["total_windows"], 2)
+
+    def test_auto_mode_uses_sliding_windows_for_whole_document_fallback(self) -> None:
+        text = "没有章节标题\n" + ("甲" * 2500)
+        chapters = [Chapter("doc_test_ch0000", "doc_test", 0, "Whole Document", 0, len(text), len(text))]
+
+        windows, report = split_candidate_windows(
+            text,
+            document_id="doc_test",
+            chapters=chapters,
+            window_size_chars=1000,
+            overlap_ratio=0.2,
+            min_window_chars=300,
+            max_window_chars=1400,
+        )
+
+        self.assertEqual(report.requested_mode, "auto")
+        self.assertEqual(report.split_mode, "sliding")
+        self.assertGreater(report.total_windows, 1)
+        self.assertEqual({window.chapter_id for window in windows}, {"doc_test_ch0000"})
 
 
 if __name__ == "__main__":

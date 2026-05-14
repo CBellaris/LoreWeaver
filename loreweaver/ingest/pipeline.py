@@ -55,7 +55,6 @@ def ingest_text(
         normalized_text,
         document_id=document_id,
         chapter_patterns=list(ingest_config.get("chapter_patterns", [])),
-        fallback_chapter_chars=int(ingest_config.get("fallback_chapter_chars", 12000)),
         max_chapters=max_chapters,
     )
 

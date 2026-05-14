@@ -94,7 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     windows_parser = subparsers.add_parser(
         "windows",
-        help="M1.2 windows: split persisted chapters into overlapping candidate windows.",
+        help="M1.2 windows: build chapter windows or fallback sliding windows.",
     )
     windows_parser.add_argument(
         "--document-id",
@@ -126,9 +126,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum expected window length for validation warnings.",
     )
     windows_parser.add_argument(
-        "--by-chapter",
-        action="store_true",
-        help="Use each natural chapter as one candidate window instead of sliding windows.",
+        "--window-mode",
+        choices=("auto", "by_chapter", "sliding"),
+        help=(
+            "Windowing strategy. auto uses one window per detected chapter, "
+            "or sliding windows over the whole-document fallback chapter."
+        ),
     )
     windows_parser.set_defaults(func=_windows)
 
@@ -200,8 +203,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--batch-model",
         default=None,
         help=(
-            "Model used for batch extraction. Defaults to deepseek-ai/DeepSeek-V3.1-Terminus "
-            "unless configured."
+            "Model used for batch extraction. Defaults to models.extraction.batch_name "
+            "from the models config."
         ),
     )
     extract_parser.add_argument(
@@ -225,24 +228,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--batch-completion-window",
         default="24h",
         help="Batch completion window passed to the provider.",
-    )
-    extract_parser.add_argument(
-        "--repair-failed",
-        action="store_true",
-        help=(
-            "Re-run only windows that currently have failed extraction/locator spans. "
-            "This re-extracts the whole selected window."
-        ),
-    )
-    extract_parser.add_argument(
-        "--span-chars-min",
-        type=int,
-        help="When used with --repair-failed, first accept failed spans using this relaxed min length. Defaults to 1.",
-    )
-    extract_parser.add_argument(
-        "--span-chars-max",
-        type=int,
-        help="When used with --repair-failed, first accept failed spans using this relaxed max length. Defaults to 2000.",
     )
     extract_parser.set_defaults(func=_extract)
 
@@ -753,7 +738,7 @@ def _windows(args: argparse.Namespace) -> int:
             overlap_ratio=args.overlap_ratio,
             min_window_chars=args.min_chars,
             max_window_chars=args.max_chars,
-            split_by_chapter=args.by_chapter,
+            window_mode=args.window_mode,
             progress=progress,
         )
     finally:
@@ -770,6 +755,7 @@ def _windows(args: argparse.Namespace) -> int:
     print(f"sqlite_path: {report['sqlite_path']}")
     print(f"report_path: {report['report_path']}")
     print(f"total_chapters: {split['total_chapters']}")
+    print(f"requested_mode: {split['requested_mode']}")
     print(f"split_mode: {split['split_mode']}")
     print(f"total_windows: {split['total_windows']}")
     print(f"average_window_chars: {split['average_window_chars']}")
@@ -834,9 +820,6 @@ def _extract(args: argparse.Namespace) -> int:
             batch_poll_interval_seconds=args.batch_poll_interval,
             batch_timeout_seconds=args.batch_timeout,
             batch_completion_window=args.batch_completion_window,
-            repair_failed=args.repair_failed,
-            span_chars_min=args.span_chars_min,
-            span_chars_max=args.span_chars_max,
             progress=progress,
         )
     finally:
@@ -978,7 +961,7 @@ def _spans(args: argparse.Namespace) -> int:
             f"chapter_id={span.chapter_id} "
             f"range={span.span_start_idx}-{span.span_end_idx}"
         )
-        print(f"   summary: {_truncate(span.micro_summary, 120)}")
+        print(f"   summary: {_truncate(span.summary, 120)}")
         if span.entities:
             print(f"   entities: {', '.join(span.entities[:8])}")
         if span.topics:
@@ -1329,7 +1312,7 @@ def _print_eval_summary(report: dict, *, command: str) -> None:
 
 def _print_search_results(results: list[dict]) -> None:
     for result in results:
-        summary = result.get("micro_summary") or ""
+        summary = result.get("summary") or ""
         if len(summary) > 120:
             summary = summary[:117] + "..."
         print(
@@ -1392,7 +1375,7 @@ def _print_graph_clusters(clusters: list[dict]) -> None:
                     f"chapter={components.get('chapter', 0):.3f} "
                     f"salience={components.get('salience', 0):.3f}"
                 )
-            summary = member.get("micro_summary")
+            summary = member.get("summary")
             if summary:
                 print(f"     summary: {_truncate(summary, 100)}")
 
@@ -1407,7 +1390,7 @@ def _print_retrieve_results(results: list[dict]) -> None:
             f"chapter_id={result['chapter_id']} "
             f"range={result['span_start_idx']}-{result['span_end_idx']}"
         )
-        print(f"   summary: {_truncate(result['micro_summary'], 140)}")
+        print(f"   summary: {_truncate(result['summary'], 140)}")
         entities = result.get("entities") or []
         if entities:
             print(f"   entities: {', '.join(str(entity) for entity in entities[:8])}")

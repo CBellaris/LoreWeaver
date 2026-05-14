@@ -118,7 +118,7 @@ def _rank_clusters(
             [
                 cluster.cluster_name,
                 cluster.cluster_type,
-                cluster.micro_summary,
+                cluster.summary,
             ]
         )
         cluster_tokens = set(tokenize_for_bm25(cluster_text))

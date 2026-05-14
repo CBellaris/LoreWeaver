@@ -18,6 +18,7 @@ from loreweaver.storage.sqlite_store import SQLiteStore
 class WindowSplitReport:
     document_id: str
     split_mode: str
+    requested_mode: str
     total_windows: int
     total_chapters: int
     average_window_chars: float
@@ -44,7 +45,7 @@ def build_candidate_windows(
     overlap_ratio: float | None = None,
     min_window_chars: int | None = None,
     max_window_chars: int | None = None,
-    split_by_chapter: bool = False,
+    window_mode: str | None = None,
     progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Load chapters from SQLite, split normalized text, and persist windows."""
@@ -97,6 +98,7 @@ def build_candidate_windows(
         if max_window_chars is not None
         else int(window_config.get("max_chars", 1600))
     )
+    requested_mode = str(window_mode or window_config.get("mode", "auto"))
 
     windows, split_report = split_candidate_windows(
         normalized_text,
@@ -106,7 +108,7 @@ def build_candidate_windows(
         overlap_ratio=overlap,
         min_window_chars=min_chars,
         max_window_chars=max_chars,
-        split_by_chapter=split_by_chapter,
+        window_mode=requested_mode,
     )
     if progress is not None:
         progress.emit(
@@ -177,10 +179,12 @@ def split_candidate_windows(
     overlap_ratio: float = 0.2,
     min_window_chars: int = 300,
     max_window_chars: int = 1600,
-    split_by_chapter: bool = False,
+    window_mode: str = "auto",
 ) -> tuple[list[CandidateWindow], WindowSplitReport]:
-    """Split each chapter into deterministic overlapping windows."""
-    if not split_by_chapter:
+    """Build candidate windows from real chapters or fallback sliding windows."""
+    requested_mode = _normalize_window_mode(window_mode)
+    split_mode = _resolve_window_mode(requested_mode, chapters)
+    if split_mode == "sliding":
         _validate_window_config(
             window_size_chars=window_size_chars,
             overlap_ratio=overlap_ratio,
@@ -193,7 +197,7 @@ def split_candidate_windows(
     per_chapter_counts: dict[str, int] = {}
 
     for chapter in chapters:
-        if split_by_chapter:
+        if split_mode == "by_chapter":
             chapter_windows = [_chapter_as_window(text, document_id=document_id, chapter=chapter)]
         else:
             chapter_windows = _split_chapter_windows(
@@ -212,12 +216,13 @@ def split_candidate_windows(
         chapters,
         windows,
         max_window_chars=max_window_chars,
-        enforce_max_window_chars=not split_by_chapter,
+        enforce_max_window_chars=split_mode == "sliding",
     )
     lengths = [window.char_count for window in windows]
     report = WindowSplitReport(
         document_id=document_id,
-        split_mode="chapter" if split_by_chapter else "sliding_window",
+        split_mode=split_mode,
+        requested_mode=requested_mode,
         total_windows=len(windows),
         total_chapters=len(chapters),
         average_window_chars=round(sum(lengths) / len(lengths), 2) if lengths else 0.0,
@@ -226,14 +231,35 @@ def split_candidate_windows(
         short_window_count=sum(1 for length in lengths if length < min_window_chars),
         configured_window_size_chars=window_size_chars,
         configured_overlap_ratio=overlap_ratio,
-        effective_stride_chars=stride,
-        effective_overlap_chars=max(0, window_size_chars - stride),
+        effective_stride_chars=stride if split_mode == "sliding" else 0,
+        effective_overlap_chars=max(0, window_size_chars - stride) if split_mode == "sliding" else 0,
         min_window_chars=min_window_chars,
         max_window_chars=max_window_chars,
         per_chapter_window_counts=per_chapter_counts,
         boundary_warnings=warnings,
     )
     return windows, report
+
+
+def _normalize_window_mode(window_mode: str) -> str:
+    normalized = window_mode.strip().lower()
+    if normalized not in {"auto", "by_chapter", "sliding"}:
+        raise ValueError("window_mode must be one of: auto, by_chapter, sliding")
+    return normalized
+
+
+def _resolve_window_mode(window_mode: str, chapters: list[Chapter]) -> str:
+    if window_mode != "auto":
+        return window_mode
+    return "sliding" if _uses_whole_document_fallback(chapters) else "by_chapter"
+
+
+def _uses_whole_document_fallback(chapters: list[Chapter]) -> bool:
+    return (
+        len(chapters) == 1
+        and chapters[0].chapter_index == 0
+        and chapters[0].chapter_id.endswith("_ch0000")
+    )
 
 
 def _chapter_as_window(

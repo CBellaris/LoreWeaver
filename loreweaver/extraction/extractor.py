@@ -35,9 +35,6 @@ from loreweaver.storage.sqlite_store import SQLiteStore
 BATCH_MAX_REQUESTS_PER_FILE = 5000
 BATCH_LIVE_RETRY_THRESHOLD_DEFAULT = 8
 BATCH_RETRY_MAX_ROUNDS_DEFAULT = 3
-REPAIR_SPAN_CHARS_MIN_DEFAULT = 1
-REPAIR_SPAN_CHARS_MAX_DEFAULT = 2000
-
 
 class ChatClient(Protocol):
     def complete_json(
@@ -243,25 +240,23 @@ class MockChatClient:
             "spans": [
                 {
                     "span_type": "event",
-                    "micro_summary": compact[:100] or "空窗口",
+                    "summary": compact[:100] or "空窗口",
                     "entities": [],
                     "topics": ["mock_extraction"],
                     "salience_score": 0.5,
                     "start_anchor_quote": first_start,
                     "end_anchor_quote": first_end,
                     "key_quote": first_start,
-                    "overlap_reason": "",
                 },
                 {
                     "span_type": "mystery_clue",
-                    "micro_summary": compact[40:140] or compact[:100] or "空窗口",
+                    "summary": compact[40:140] or compact[:100] or "空窗口",
                     "entities": [],
                     "topics": ["mock_extraction"],
                     "salience_score": 0.45,
                     "start_anchor_quote": second_start,
                     "end_anchor_quote": second_end,
                     "key_quote": second_start,
-                    "overlap_reason": "mock 模式用于验证一个窗口多 Span 落库。",
                 },
             ]
         }
@@ -294,9 +289,6 @@ def extract_document_windows(
     batch_poll_interval_seconds: float = 30.0,
     batch_timeout_seconds: float | None = None,
     batch_completion_window: str = "24h",
-    repair_failed: bool = False,
-    span_chars_min: int | None = None,
-    span_chars_max: int | None = None,
     progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Run M1.3 extraction over persisted candidate windows and write reports."""
@@ -309,14 +301,7 @@ def extract_document_windows(
     if not windows:
         raise ValueError(f"No candidate windows found for document_id={document.document_id}")
     selected_window_ids = _normalize_window_ids(window_id=window_id, window_ids=window_ids)
-    if repair_failed:
-        if selected_window_ids or window_ranges:
-            windows = _select_windows(
-                windows,
-                window_ids=selected_window_ids,
-                window_ranges=window_ranges or [],
-            )
-    elif batch_id:
+    if batch_id:
         windows = windows[offset:]
         if limit is not None:
             windows = windows[:limit]
@@ -334,16 +319,15 @@ def extract_document_windows(
     extraction_config = config.values.get("extraction", {})
     locator_config = config.values.get("locator", {})
     model_settings = _model_settings(models_config)
-    model_name = str(extraction_config.get("model") or model_settings["model"])
+    model_name = str(model_settings["model"])
     batch_mode = batch or bool(batch_id)
     if batch_mode:
         model_name = str(
             batch_model
-            or extraction_config.get("batch_model")
             or model_settings.get("batch_model")
             or "deepseek-ai/DeepSeek-V3.1-Terminus"
         )
-    temperature = float(extraction_config.get("temperature", model_settings["temperature"]))
+    temperature = float(model_settings["temperature"])
     retry_policy = RetryPolicy(max_retries=int(extraction_config.get("max_retries", 2)))
     batch_live_retry_threshold = max(
         0,
@@ -363,84 +347,12 @@ def extract_document_windows(
             )
         ),
     )
-    min_spans_per_window = int(extraction_config.get("min_spans_per_window", 2))
-    max_spans_per_window = int(extraction_config.get("max_spans_per_window", 12))
     anchor_min_chars = int(extraction_config.get("anchor_min_chars", 8))
     anchor_max_chars = int(extraction_config.get("anchor_max_chars", 80))
-    target_span_chars_min = int(extraction_config.get("target_span_chars_min", 80))
-    target_span_chars_max = int(extraction_config.get("target_span_chars_max", 800))
     store_located_text = bool(extraction_config.get("store_located_text", True))
     store_uncovered_text = bool(extraction_config.get("store_uncovered_text", True))
     fuzzy_threshold = float(locator_config.get("fuzzy_threshold", 0.86))
-    price = _token_price(extraction_config, model_settings, batch_mode=batch_mode)
-    repair_summary: dict[str, Any] = {}
-
-    if repair_failed:
-        repair_min_chars, repair_max_chars = _resolve_repair_span_bounds(
-            span_chars_min=span_chars_min,
-            span_chars_max=span_chars_max,
-        )
-        repair_summary = _repair_failed_spans_with_relaxed_bounds(
-            store=store,
-            document_id=document.document_id,
-            windows=windows,
-            min_span_chars=repair_min_chars,
-            max_span_chars=repair_max_chars,
-            anchor_min_chars=anchor_min_chars,
-            anchor_max_chars=anchor_max_chars,
-            store_located_text=store_located_text,
-            store_uncovered_text=store_uncovered_text,
-            fuzzy_threshold=fuzzy_threshold,
-            progress=progress,
-        )
-        remaining_failed_window_ids = {
-            status["window_id"]
-            for status in store.list_window_extraction_status(document.document_id)
-            if int(status.get("failed_count") or 0) > 0
-        }
-        windows = [window for window in windows if window.window_id in remaining_failed_window_ids]
-        if not windows:
-            report = _build_report(
-                run_id=run_id,
-                document=document,
-                windows=[],
-                results=[],
-                model_name=model_name,
-                mock=mock,
-                sqlite_path=storage_config.sqlite_path,
-            )
-            report.update(
-                {
-                    "repair_failed": True,
-                    "repair_relaxed": repair_summary,
-                    "message": "No failed windows remain after relaxed span repair.",
-                }
-            )
-            _persist_extraction_report(
-                config=config,
-                store=store,
-                run_id=run_id,
-                document_id=document.document_id,
-                report=report,
-            )
-            if progress is not None:
-                progress.emit(
-                    "completed",
-                    stage="extract.completed",
-                    label="Repair completed",
-                    current=0,
-                    total=0,
-                    unit="windows",
-                    status="completed",
-                    detail={
-                        "report_path": report["report_path"],
-                        "relaxed_repaired_count": repair_summary["repaired_count"],
-                    },
-                )
-            return report
-        windows = windows[offset:]
-        if limit is not None:
-            windows = windows[:limit]
+    price = _token_price(model_settings, batch_mode=batch_mode)
 
     client: ChatClient
     if mock:
@@ -468,12 +380,8 @@ def extract_document_windows(
             model_name=model_name,
             temperature=temperature,
             retry_policy=retry_policy,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             store_uncovered_text=store_uncovered_text,
             fuzzy_threshold=fuzzy_threshold,
@@ -487,20 +395,6 @@ def extract_document_windows(
             batch_retry_max_rounds=batch_retry_max_rounds,
             progress=progress,
         )
-        if repair_failed:
-            batch_report.update(
-                {
-                    "repair_failed": True,
-                    "repair_relaxed": repair_summary,
-                }
-            )
-            _persist_extraction_report(
-                config=config,
-                store=store,
-                run_id=run_id,
-                document_id=document.document_id,
-                report=batch_report,
-            )
         return batch_report
 
     store.delete_spans_for_windows(window.window_id for window in windows)
@@ -521,7 +415,6 @@ def extract_document_windows(
                 "window_offset": offset,
                 "window_ids": selected_window_ids,
                 "window_ranges": window_ranges or [],
-                "repair_failed": repair_failed,
             },
         )
 
@@ -550,12 +443,8 @@ def extract_document_windows(
             model=model_name,
             temperature=temperature,
             retry_policy=retry_policy,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             fuzzy_threshold=fuzzy_threshold,
             token_price=price,
@@ -638,13 +527,6 @@ def extract_document_windows(
         mock=mock,
         sqlite_path=storage_config.sqlite_path,
     )
-    if repair_failed:
-        report.update(
-            {
-                "repair_failed": True,
-                "repair_relaxed": repair_summary,
-            }
-        )
     runs_dir = config.data_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     report_path = runs_dir / f"{run_id}_extraction_report.json"
@@ -670,25 +552,6 @@ def extract_document_windows(
         )
     return report
 
-
-def _resolve_repair_span_bounds(
-    *,
-    span_chars_min: int | None,
-    span_chars_max: int | None,
-) -> tuple[int, int]:
-    min_chars = (
-        REPAIR_SPAN_CHARS_MIN_DEFAULT
-        if span_chars_min is None
-        else int(span_chars_min)
-    )
-    max_chars = (
-        REPAIR_SPAN_CHARS_MAX_DEFAULT
-        if span_chars_max is None
-        else int(span_chars_max)
-    )
-    if min_chars < 1 or max_chars < min_chars:
-        raise ValueError("span_chars_min/span_chars_max must define a positive ordered range.")
-    return min_chars, max_chars
 
 
 def list_extraction_windows(
@@ -734,12 +597,8 @@ def _run_batch_extraction(
     model_name: str,
     temperature: float,
     retry_policy: RetryPolicy,
-    min_spans_per_window: int,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     store_located_text: bool,
     store_uncovered_text: bool,
     fuzzy_threshold: float,
@@ -771,12 +630,8 @@ def _run_batch_extraction(
             windows=windows,
             model=model_name,
             temperature=temperature,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             json_response_format=client._json_response_format,
         )
         if progress is not None:
@@ -904,11 +759,8 @@ def _run_batch_extraction(
         store=store,
         windows=windows,
         outputs=outputs,
-        max_spans_per_window=max_spans_per_window,
         anchor_min_chars=anchor_min_chars,
         anchor_max_chars=anchor_max_chars,
-        target_span_chars_min=target_span_chars_min,
-        target_span_chars_max=target_span_chars_max,
         store_located_text=store_located_text,
         store_uncovered_text=store_uncovered_text,
         fuzzy_threshold=fuzzy_threshold,
@@ -939,12 +791,8 @@ def _run_batch_extraction(
             client=client,
             model_name=model_name,
             temperature=temperature,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             batch_poll_interval_seconds=batch_poll_interval_seconds,
             batch_timeout_seconds=batch_timeout_seconds,
             batch_completion_window=batch_completion_window,
@@ -962,11 +810,8 @@ def _run_batch_extraction(
             store=store,
             windows=pending_windows,
             outputs=retry_outputs,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             store_uncovered_text=store_uncovered_text,
             fuzzy_threshold=fuzzy_threshold,
@@ -989,12 +834,8 @@ def _run_batch_extraction(
             model=model_name,
             temperature=temperature,
             retry_policy=retry_policy,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             store_uncovered_text=store_uncovered_text,
             fuzzy_threshold=fuzzy_threshold,
@@ -1117,12 +958,8 @@ def _run_batch_retry_round(
     client: OpenAIChatClient,
     model_name: str,
     temperature: float,
-    min_spans_per_window: int,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     batch_poll_interval_seconds: float,
     batch_timeout_seconds: float | None,
     batch_completion_window: str,
@@ -1136,12 +973,8 @@ def _run_batch_retry_round(
         windows=windows,
         model=model_name,
         temperature=temperature,
-        min_spans_per_window=min_spans_per_window,
-        max_spans_per_window=max_spans_per_window,
         anchor_min_chars=anchor_min_chars,
         anchor_max_chars=anchor_max_chars,
-        target_span_chars_min=target_span_chars_min,
-        target_span_chars_max=target_span_chars_max,
         json_response_format=client._json_response_format,
     )
     if progress is not None:
@@ -1243,12 +1076,8 @@ def _write_batch_input_file(
     windows: list[CandidateWindow],
     model: str,
     temperature: float,
-    min_spans_per_window: int,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     json_response_format: bool,
 ) -> None:
     with input_path.open("w", encoding="utf-8") as file_obj:
@@ -1257,12 +1086,8 @@ def _write_batch_input_file(
                 window=window,
                 model=model,
                 temperature=temperature,
-                min_spans_per_window=min_spans_per_window,
-                max_spans_per_window=max_spans_per_window,
                 anchor_min_chars=anchor_min_chars,
                 anchor_max_chars=anchor_max_chars,
-                target_span_chars_min=target_span_chars_min,
-                target_span_chars_max=target_span_chars_max,
                 json_response_format=json_response_format,
             )
             file_obj.write(json.dumps(line, ensure_ascii=False) + "\n")
@@ -1273,22 +1098,14 @@ def _build_batch_request_line(
     window: CandidateWindow,
     model: str,
     temperature: float,
-    min_spans_per_window: int,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     json_response_format: bool,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model,
         "messages": build_extraction_messages(
             window,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
         ),
@@ -1309,11 +1126,8 @@ def _apply_batch_outputs(
     store: SQLiteStore,
     windows: list[CandidateWindow],
     outputs: list[BatchOutput],
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     store_located_text: bool,
     store_uncovered_text: bool,
     fuzzy_threshold: float,
@@ -1380,11 +1194,8 @@ def _apply_batch_outputs(
                     attempts=1,
                     usage=output.usage,
                     token_price=token_price,
-                    max_spans_per_window=max_spans_per_window,
                     anchor_min_chars=anchor_min_chars,
                     anchor_max_chars=anchor_max_chars,
-                    target_span_chars_min=target_span_chars_min,
-                    target_span_chars_max=target_span_chars_max,
                     store_located_text=store_located_text,
                     fuzzy_threshold=fuzzy_threshold,
                     raise_parse_errors=True,
@@ -1510,12 +1321,8 @@ def _retry_windows_live(
     model: str,
     temperature: float,
     retry_policy: RetryPolicy,
-    min_spans_per_window: int,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     store_located_text: bool,
     store_uncovered_text: bool,
     fuzzy_threshold: float,
@@ -1550,12 +1357,8 @@ def _retry_windows_live(
             model=model,
             temperature=temperature,
             retry_policy=retry_policy,
-            min_spans_per_window=min_spans_per_window,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             fuzzy_threshold=fuzzy_threshold,
             token_price=token_price,
@@ -1680,21 +1483,14 @@ def _results_from_raw_window_output(
     attempts: int,
     usage: dict[str, int],
     token_price: TokenPrice,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     store_located_text: bool,
     fuzzy_threshold: float,
     raise_parse_errors: bool = False,
 ) -> list[ExtractionResult]:
     messages = build_extraction_messages(
         window,
-        min_spans_per_window=1,
-        max_spans_per_window=max_spans_per_window,
-        target_span_chars_min=target_span_chars_min,
-        target_span_chars_max=target_span_chars_max,
         anchor_min_chars=anchor_min_chars,
         anchor_max_chars=anchor_max_chars,
     )
@@ -1708,11 +1504,8 @@ def _results_from_raw_window_output(
             attempts=attempts,
             usage_total=usage_total,
             token_price=token_price,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             fuzzy_threshold=fuzzy_threshold,
         )
@@ -1910,164 +1703,6 @@ def _normalize_window_ids(
     return normalized
 
 
-def _repair_failed_spans_with_relaxed_bounds(
-    *,
-    store: SQLiteStore,
-    document_id: str,
-    windows: list[CandidateWindow],
-    min_span_chars: int,
-    max_span_chars: int,
-    anchor_min_chars: int,
-    anchor_max_chars: int,
-    store_located_text: bool,
-    store_uncovered_text: bool,
-    fuzzy_threshold: float,
-    progress: ProgressReporter | None,
-) -> dict[str, Any]:
-    window_by_id = {window.window_id: window for window in windows}
-    if not window_by_id:
-        return {
-            "candidate_count": 0,
-            "repaired_count": 0,
-            "failed_count": 0,
-            "window_count": 0,
-            "span_chars_min": min_span_chars,
-            "span_chars_max": max_span_chars,
-        }
-    with store.connect() as connection:
-        placeholders = ",".join("?" for _ in window_by_id)
-        failure_rows = connection.execute(
-            f"""
-            SELECT DISTINCT span_id
-            FROM extraction_failures
-            WHERE stage = ? AND span_id IS NOT NULL AND window_id IN ({placeholders})
-            """,
-            ["locator", *window_by_id.keys()],
-        ).fetchall()
-    failed_span_ids = {str(row["span_id"]) for row in failure_rows}
-    spans = [
-        span
-        for span in store.list_spans(document_id)
-        if span.span_id in failed_span_ids and span.locator_status != "located"
-    ]
-    if progress is not None:
-        progress.emit(
-            "repair_relaxed_start",
-            stage="extract.repair.relaxed",
-            label="Repair failed spans with relaxed bounds",
-            current=0,
-            total=len(spans),
-            unit="spans",
-            detail={
-                "span_chars_min": min_span_chars,
-                "span_chars_max": max_span_chars,
-                "candidate_count": len(spans),
-            },
-        )
-
-    repaired: list[Span] = []
-    failed_count = 0
-    touched_window_ids: set[str] = set()
-    for span in spans:
-        window = window_by_id.get(span.window_id)
-        if window is None:
-            failed_count += 1
-            continue
-        start_anchor = _anchor_for_location(
-            span.start_anchor_quote,
-            role="start",
-            max_chars=anchor_max_chars,
-        )
-        end_anchor = _anchor_for_location(
-            span.end_anchor_quote,
-            role="end",
-            max_chars=anchor_max_chars,
-        )
-        start_ok, _ = anchor_constraints_ok(
-            start_anchor,
-            min_chars=anchor_min_chars,
-            max_chars=anchor_max_chars,
-            label="start_anchor_quote",
-        )
-        end_ok, _ = anchor_constraints_ok(
-            end_anchor,
-            min_chars=anchor_min_chars,
-            max_chars=anchor_max_chars,
-            label="end_anchor_quote",
-        )
-        if not start_ok or not end_ok:
-            failed_count += 1
-            continue
-        locator_result = locate_span_anchors(
-            window,
-            start_anchor_quote=start_anchor,
-            end_anchor_quote=end_anchor,
-            fuzzy_threshold=fuzzy_threshold,
-            min_span_chars=min_span_chars,
-            max_span_chars=max_span_chars,
-        )
-        if locator_result.status != "located":
-            failed_count += 1
-            continue
-        span_start = locator_result.start_idx
-        span_end = locator_result.end_idx
-        located_text = ""
-        if store_located_text and span_start is not None and span_end is not None:
-            located_text = window.text[span_start - window.window_start : span_end - window.window_start]
-        repaired_span = replace(
-            span,
-            span_start_idx=span_start,
-            span_end_idx=span_end,
-            located_text=located_text,
-            locator_confidence=locator_result.confidence,
-            locator_status="located",
-            created_at=datetime.now(timezone.utc),
-        )
-        store.upsert_span(repaired_span)
-        store.insert_locator_candidates(
-            span_id=repaired_span.span_id,
-            candidates=locator_result.candidates,
-        )
-        repaired.append(repaired_span)
-        touched_window_ids.add(repaired_span.window_id)
-
-    store.delete_extraction_failures_for_spans(span.span_id for span in repaired)
-    if store_uncovered_text and touched_window_ids:
-        all_spans = store.list_spans(document_id)
-        for window_id in touched_window_ids:
-            window = window_by_id[window_id]
-            window_spans = [span for span in all_spans if span.window_id == window_id]
-            store.update_window_uncovered_text(
-                window_id,
-                build_uncovered_text(window, window_spans),
-            )
-
-    if progress is not None:
-        progress.emit(
-            "repair_relaxed_done",
-            stage="extract.repair.relaxed",
-            label="Relaxed span repair completed",
-            current=len(spans),
-            total=len(spans),
-            unit="spans",
-            detail={
-                "repaired_count": len(repaired),
-                "failed_count": failed_count,
-                "span_chars_min": min_span_chars,
-                "span_chars_max": max_span_chars,
-            },
-        )
-    return {
-        "candidate_count": len(spans),
-        "repaired_count": len(repaired),
-        "failed_count": failed_count,
-        "window_count": len(touched_window_ids),
-        "span_chars_min": min_span_chars,
-        "span_chars_max": max_span_chars,
-        "repaired_span_ids": [span.span_id for span in repaired[:50]],
-    }
-
-
 def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
@@ -2158,12 +1793,8 @@ def extract_window(
     model: str,
     temperature: float,
     retry_policy: RetryPolicy,
-    min_spans_per_window: int,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     store_located_text: bool,
     fuzzy_threshold: float,
     token_price: TokenPrice,
@@ -2172,10 +1803,6 @@ def extract_window(
 ) -> list[ExtractionResult]:
     messages = build_extraction_messages(
         window,
-        min_spans_per_window=min_spans_per_window,
-        max_spans_per_window=max_spans_per_window,
-        target_span_chars_min=target_span_chars_min,
-        target_span_chars_max=target_span_chars_max,
         anchor_min_chars=anchor_min_chars,
         anchor_max_chars=anchor_max_chars,
     )
@@ -2231,11 +1858,8 @@ def extract_window(
                 attempts=attempt,
                 usage_total=usage_total,
                 token_price=token_price,
-                max_spans_per_window=max_spans_per_window,
                 anchor_min_chars=anchor_min_chars,
                 anchor_max_chars=anchor_max_chars,
-                target_span_chars_min=target_span_chars_min,
-                target_span_chars_max=target_span_chars_max,
                 store_located_text=store_located_text,
                 fuzzy_threshold=fuzzy_threshold,
             )
@@ -2277,11 +1901,8 @@ def extract_window(
             attempts=retry_policy.max_attempts,
             usage_total=usage_total,
             token_price=token_price,
-            max_spans_per_window=max_spans_per_window,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            target_span_chars_min=target_span_chars_min,
-            target_span_chars_max=target_span_chars_max,
             store_located_text=store_located_text,
             fuzzy_threshold=fuzzy_threshold,
             force_failure_reason=last_reason,
@@ -2402,27 +2023,12 @@ def _model_settings(models_config: AppConfig) -> dict[str, Any]:
     }
 
 
-def _token_price(
-    extraction_config: dict[str, Any],
-    model_settings: dict[str, Any],
-    *,
-    batch_mode: bool,
-) -> TokenPrice:
+def _token_price(model_settings: dict[str, Any], *, batch_mode: bool) -> TokenPrice:
     input_key = "batch_input_yuan_per_1k" if batch_mode else "input_yuan_per_1k"
     output_key = "batch_output_yuan_per_1k" if batch_mode else "output_yuan_per_1k"
     return TokenPrice(
-        input_yuan_per_1k=float(
-            extraction_config.get(
-                input_key,
-                model_settings.get(input_key, extraction_config.get("input_yuan_per_1k", 0.0)),
-            )
-        ),
-        output_yuan_per_1k=float(
-            extraction_config.get(
-                output_key,
-                model_settings.get(output_key, extraction_config.get("output_yuan_per_1k", 0.0)),
-            )
-        ),
+        input_yuan_per_1k=float(model_settings.get(input_key, 0.0)),
+        output_yuan_per_1k=float(model_settings.get(output_key, 0.0)),
     )
 
 
@@ -2455,17 +2061,14 @@ def _results_from_window_payload(
     attempts: int,
     usage_total: dict[str, int],
     token_price: TokenPrice,
-    max_spans_per_window: int,
     anchor_min_chars: int,
     anchor_max_chars: int,
-    target_span_chars_min: int,
-    target_span_chars_max: int,
     store_located_text: bool,
     fuzzy_threshold: float,
     force_failure_reason: str | None = None,
 ) -> list[ExtractionResult]:
     results: list[ExtractionResult] = []
-    for span_index, span_payload in enumerate(payload.spans[:max_spans_per_window], start=1):
+    for span_index, span_payload in enumerate(payload.spans, start=1):
         locator_result: LocatorResult | None = None
         status = "located"
         failure_reason = force_failure_reason
@@ -2501,8 +2104,6 @@ def _results_from_window_payload(
                     start_anchor_quote=start_anchor,
                     end_anchor_quote=end_anchor,
                     fuzzy_threshold=fuzzy_threshold,
-                    min_span_chars=target_span_chars_min,
-                    max_span_chars=target_span_chars_max,
                 )
                 if locator_result.status != "located":
                     status = "failed"
@@ -2602,14 +2203,13 @@ def _span_from_payload(
         window_start=window.window_start,
         window_end=window.window_end,
         span_type=payload.span_type if payload else "other",
-        micro_summary=payload.micro_summary if payload else "",
+        summary=payload.summary if payload else "",
         entities=payload.entities if payload else [],
         topics=payload.topics if payload else [],
         salience_score=payload.salience_score if payload else 0.0,
         start_anchor_quote=payload.start_anchor_quote if payload else "",
         end_anchor_quote=payload.end_anchor_quote if payload else "",
         key_quote=payload.key_quote if payload else "",
-        overlap_reason=payload.overlap_reason if payload else "",
         span_start_idx=span_start if status == "located" else None,
         span_end_idx=span_end if status == "located" else None,
         located_text=located_text,
@@ -2688,7 +2288,7 @@ def _build_report(
             {
                 "window_id": result.span.window_id,
                 "span_id": result.span.span_id,
-                "micro_summary": result.span.micro_summary,
+                "summary": result.span.summary,
                 "reason": result.failure_reason,
             }
             for result in failed[:50]
@@ -2702,7 +2302,7 @@ def _build_report(
                 "span_start_idx": result.span.span_start_idx,
                 "span_end_idx": result.span.span_end_idx,
                 "locator_confidence": result.span.locator_confidence,
-                "micro_summary": result.span.micro_summary,
+                "summary": result.span.summary,
                 "start_anchor_quote": result.span.start_anchor_quote,
                 "end_anchor_quote": result.span.end_anchor_quote,
                 "key_quote": result.span.key_quote,

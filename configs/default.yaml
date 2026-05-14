@@ -12,7 +12,6 @@ sample:
 ingest:
   normalize_newlines: true
   remove_extra_blank_lines: true
-  fallback_chapter_chars: 12000
   chapter_patterns:
     - "^第[一二三四五六七八九十百千万零〇两0-9]+章"
     - "^[一二三四五六七八九十百千万零〇两0-9]+章"
@@ -20,31 +19,20 @@ ingest:
     - "^【 第 [0-9]+ 部分 】"
 
 window:
+  mode: "auto"
   size_chars: 1200
   overlap_ratio: 0.2
   min_chars: 300
   max_chars: 1600
 
 extraction:
-  model: "deepseek-ai/DeepSeek-V3.2"
-  batch_model: "deepseek-ai/DeepSeek-V3.1-Terminus"
-  temperature: 0
   max_retries: 2
   batch_live_retry_threshold: 5
   batch_retry_max_rounds: 3
-  min_spans_per_window: 2
-  max_spans_per_window: 12
-  target_span_chars_min: 30
-  target_span_chars_max: 800
   anchor_min_chars: 4
   anchor_max_chars: 80
-  allow_overlap: true
   store_located_text: true
   store_uncovered_text: true
-  input_yuan_per_1k: 0.002
-  output_yuan_per_1k: 0.003
-  batch_input_yuan_per_1k: 0.002
-  batch_output_yuan_per_1k: 0.006
 
 locator:
   fuzzy_threshold: 0.86

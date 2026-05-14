@@ -208,7 +208,7 @@ class DebugInspector:
         if query:
             like = f"%{query}%"
             clauses.append(
-                "(span_id LIKE ? OR micro_summary LIKE ? "
+                "(span_id LIKE ? OR summary LIKE ? "
                 "OR entities_json LIKE ? OR topics_json LIKE ?)"
             )
             params.extend([like, like, like, like])
@@ -276,14 +276,11 @@ class DebugInspector:
         limit: int = 200,
     ) -> dict[str, Any]:
         """Return per-window span coverage audits for manual review."""
-        config, storage_config, _ = self.configs
+        _, storage_config, _ = self.configs
         store = SQLiteStore(storage_config.sqlite_path)
         store.initialize()
         store.initialize_extraction_tables()
         document = store.get_document(document_id)
-        max_spans_per_window = int(
-            config.values.get("extraction", {}).get("max_spans_per_window", 12)
-        )
         with _connect(storage_config.sqlite_path) as connection:
             windows = connection.execute(
                 """
@@ -314,7 +311,6 @@ class DebugInspector:
                 window=window,
                 spans=spans,
                 failures=failures,
-                max_spans_per_window=max_spans_per_window,
                 global_window_index=global_window_index,
             )
             if with_spans_only and audit["span_count"] == 0:
@@ -348,10 +344,7 @@ class DebugInspector:
         }
 
     def span_review_window(self, window_id: str) -> dict[str, Any]:
-        config, storage_config, _ = self.configs
-        max_spans_per_window = int(
-            config.values.get("extraction", {}).get("max_spans_per_window", 12)
-        )
+        _, storage_config, _ = self.configs
         with _connect(storage_config.sqlite_path) as connection:
             window = connection.execute(
                 """
@@ -396,7 +389,6 @@ class DebugInspector:
             window=window_payload,
             spans=spans,
             failures=failures,
-            max_spans_per_window=max_spans_per_window,
         )
         return {
             "window": window_payload,
@@ -588,7 +580,6 @@ def _coverage_audit(
     window: dict[str, Any],
     spans: list[dict[str, Any]],
     failures: list[dict[str, Any]],
-    max_spans_per_window: int,
     global_window_index: int | None = None,
 ) -> dict[str, Any]:
     intervals = _merged_located_intervals(window, spans)
@@ -601,11 +592,9 @@ def _coverage_audit(
     failure_reasons = [str(failure.get("reason") or "") for failure in failures]
     max_gap_chars = max((end - start for start, end in gaps), default=0)
     hint_tags = _coverage_hint_tags(
-        span_count=len(spans),
         failed_count=failed_count,
         failure_reasons=failure_reasons,
         max_gap_chars=max_gap_chars,
-        max_spans_per_window=max_spans_per_window,
     )
     return {
         "window_id": window["window_id"],
@@ -675,19 +664,15 @@ def _gap_intervals(
 
 def _coverage_hint_tags(
     *,
-    span_count: int,
     failed_count: int,
     failure_reasons: list[str],
     max_gap_chars: int,
-    max_spans_per_window: int,
 ) -> list[str]:
     tags = []
     if failed_count:
         tags.append("locator_failed_likely")
     if any("outside" in reason or "length" in reason for reason in failure_reasons):
         tags.append("bounds_rejected_likely")
-    if max_spans_per_window > 0 and span_count >= max_spans_per_window:
-        tags.append("span_cap_likely")
     if max_gap_chars >= 240 and not failed_count:
         tags.append("needs_manual_review")
     if not tags:

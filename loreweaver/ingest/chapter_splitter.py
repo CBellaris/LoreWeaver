@@ -29,7 +29,6 @@ def split_chapters(
     *,
     document_id: str,
     chapter_patterns: list[str],
-    fallback_chapter_chars: int = 12000,
     max_chapters: int | None = None,
 ) -> tuple[list[Chapter], ChapterSplitReport]:
     """Split normalized text into ordered, non-overlapping chapter intervals."""
@@ -42,12 +41,8 @@ def split_chapters(
         strategy = "real_chapter_patterns"
 
     if not headings:
-        chapters = _fallback_chapters(
-            text,
-            document_id=document_id,
-            fallback_chapter_chars=fallback_chapter_chars,
-        )
-        strategy = "fixed_length_fallback"
+        chapters = [_whole_document_chapter(text, document_id=document_id)]
+        strategy = "whole_document_fallback"
     else:
         chapters = _chapters_from_headings(text, document_id=document_id, headings=headings)
 
@@ -128,40 +123,20 @@ def _chapters_from_headings(
     return chapters
 
 
-def _fallback_chapters(
+def _whole_document_chapter(
     text: str,
     *,
     document_id: str,
-    fallback_chapter_chars: int,
-) -> list[Chapter]:
-    if fallback_chapter_chars < 100:
-        raise ValueError("fallback_chapter_chars must be at least 100")
-
-    chapters: list[Chapter] = []
-    start_idx = 0
-    chapter_index = 1
-    while start_idx < len(text):
-        end_idx = min(len(text), start_idx + fallback_chapter_chars)
-        if end_idx < len(text):
-            newline_idx = text.rfind("\n", start_idx, end_idx)
-            if newline_idx > start_idx + max(100, fallback_chapter_chars // 2):
-                end_idx = newline_idx + 1
-
-        chapters.append(
-            Chapter(
-                chapter_id=f"{document_id}_ch{chapter_index:04d}",
-                document_id=document_id,
-                chapter_index=chapter_index,
-                chapter_title=f"Pseudo Chapter {chapter_index}",
-                start_idx=start_idx,
-                end_idx=end_idx,
-                char_count=end_idx - start_idx,
-            )
-        )
-        chapter_index += 1
-        start_idx = end_idx
-
-    return chapters
+) -> Chapter:
+    return Chapter(
+        chapter_id=f"{document_id}_ch0000",
+        document_id=document_id,
+        chapter_index=0,
+        chapter_title="Whole Document",
+        start_idx=0,
+        end_idx=len(text),
+        char_count=len(text),
+    )
 
 
 def _validate_chapters(text: str, chapters: list[Chapter]) -> list[str]:

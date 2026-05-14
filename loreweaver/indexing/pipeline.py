@@ -316,7 +316,7 @@ def search_vector_index(
                 "chapter_id": result.payload.get("chapter_id"),
                 "span_start_idx": result.payload.get("span_start_idx"),
                 "span_end_idx": result.payload.get("span_end_idx"),
-                "micro_summary": result.payload.get("micro_summary"),
+                "summary": result.payload.get("summary"),
                 "entities": result.payload.get("entities", []),
                 "topics": result.payload.get("topics", []),
                 "located_text": spans_by_id.get(result.span_id).located_text
@@ -359,7 +359,7 @@ def search_bm25_index(
                 "chapter_id": result.document.chapter_id,
                 "span_start_idx": result.document.span_start_idx,
                 "span_end_idx": result.document.span_end_idx,
-                "micro_summary": result.document.micro_summary,
+                "summary": result.document.summary,
                 "entities": result.document.entities,
                 "topics": result.document.topics,
                 "located_text": spans_by_id.get(result.span_id).located_text

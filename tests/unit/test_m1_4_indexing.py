@@ -40,12 +40,12 @@ class M14IndexingTests(unittest.TestCase):
                     "ingest": {
                         "normalize_newlines": True,
                         "remove_extra_blank_lines": True,
-                        "fallback_chapter_chars": 1000,
                         "chapter_patterns": [
                             r"^第[一二三四五六七八九十百千万零〇两0-9]+章",
                         ],
                     },
                     "window": {
+                        "mode": "auto",
                         "size_chars": 500,
                         "overlap_ratio": 0.2,
                         "min_chars": 120,
@@ -55,8 +55,6 @@ class M14IndexingTests(unittest.TestCase):
                         "model": "mock",
                         "temperature": 0,
                         "max_retries": 0,
-                        "target_span_chars_min": 20,
-                        "target_span_chars_max": 700,
                         "anchor_min_chars": 8,
                         "anchor_max_chars": 80,
                     },
@@ -158,7 +156,7 @@ class M14IndexingTests(unittest.TestCase):
             self.assertEqual(index_report["bm25"]["document_count"], 4)
             self.assertEqual(len(vector_report["results"]), 2)
             self.assertGreaterEqual(len(bm25_report["results"]), 1)
-            self.assertIn("高文", bm25_report["results"][0]["micro_summary"])
+            self.assertIn("高文", bm25_report["results"][0]["summary"])
 
             with sqlite3.connect(storage_config.sqlite_path) as connection:
                 cache_count = connection.execute(

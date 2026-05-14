@@ -143,7 +143,7 @@ def build_embedding_input(
     include_located_text: bool = False,
 ) -> str:
     parts = [
-        f"micro_summary: {span.micro_summary}",
+        f"summary: {span.summary}",
         f"entities: {', '.join(span.entities)}",
         f"topics: {', '.join(span.topics)}",
     ]

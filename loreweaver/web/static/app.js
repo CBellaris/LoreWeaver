@@ -394,7 +394,7 @@ function renderSpanReviewDetail(data) {
         "locator_confidence",
         "span_start_idx",
         "span_end_idx",
-        "micro_summary",
+        "summary",
         "failure_reasons",
       ])}
     </div>
@@ -441,7 +441,7 @@ function spanHoverText(span) {
     span.span_id,
     `${span.span_type} · salience ${span.salience_score} · confidence ${span.locator_confidence}`,
     `[${span.span_start_idx}, ${span.span_end_idx})`,
-    span.micro_summary,
+    span.summary,
     `start: ${span.start_anchor_quote}`,
     `end: ${span.end_anchor_quote}`,
   ].filter(Boolean).join("\n");
@@ -622,7 +622,7 @@ function renderRetrievalReport(report) {
         "sources",
         "source_scores",
         "normalized_scores",
-        "micro_summary",
+        "summary",
         "span_start_idx",
         "span_end_idx",
       ])}
@@ -636,7 +636,7 @@ function renderRetrievalReport(report) {
         "source_scores",
         "normalized_scores",
         "cluster_ids",
-        "micro_summary",
+        "summary",
       ])}
     </div>
   `;
@@ -849,12 +849,10 @@ function errorBox(error) {
 
 function isBooleanField(name) {
   return [
-    "by_chapter",
     "list_windows",
     "mock",
     "batch",
     "batch_wait",
-    "repair_failed",
     "mock_embeddings",
     "mock_reranker",
     "no_reranker",
@@ -875,8 +873,6 @@ function placeholderFor(name) {
     top_salience: "30",
     window_range: "21-40",
     batch_poll_interval: "30",
-    span_chars_min: "1",
-    span_chars_max: "2000",
     chapter_start: "1",
     chapter_end: "100",
     question_count: "50",

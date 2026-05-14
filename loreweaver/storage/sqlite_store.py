@@ -98,6 +98,7 @@ class SQLiteStore:
 
     def initialize_extraction_tables(self) -> None:
         with self.connect() as connection:
+            _reset_stale_extraction_tables(connection)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS spans (
@@ -109,14 +110,13 @@ class SQLiteStore:
                     window_start INTEGER NOT NULL,
                     window_end INTEGER NOT NULL,
                     span_type TEXT NOT NULL,
-                    micro_summary TEXT NOT NULL,
+                    summary TEXT NOT NULL,
                     entities_json TEXT NOT NULL,
                     topics_json TEXT NOT NULL,
                     salience_score REAL NOT NULL,
                     start_anchor_quote TEXT NOT NULL,
                     end_anchor_quote TEXT NOT NULL,
                     key_quote TEXT NOT NULL,
-                    overlap_reason TEXT NOT NULL,
                     span_start_idx INTEGER,
                     span_end_idx INTEGER,
                     located_text TEXT NOT NULL,
@@ -222,7 +222,7 @@ class SQLiteStore:
                     center_span_id TEXT NOT NULL,
                     cluster_name TEXT NOT NULL,
                     cluster_type TEXT NOT NULL,
-                    micro_summary TEXT NOT NULL,
+                    summary TEXT NOT NULL,
                     member_span_ids_json TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     status TEXT NOT NULL,
@@ -694,23 +694,22 @@ class SQLiteStore:
                 """
                 INSERT INTO spans (
                     span_id, document_id, chapter_id, window_id, span_index_in_window,
-                    window_start, window_end, span_type, micro_summary,
+                    window_start, window_end, span_type, summary,
                     entities_json, topics_json, salience_score, start_anchor_quote,
-                    end_anchor_quote, key_quote, overlap_reason, span_start_idx,
+                    end_anchor_quote, key_quote, span_start_idx,
                     span_end_idx, located_text, locator_confidence, locator_status, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(span_id) DO UPDATE SET
                     span_index_in_window=excluded.span_index_in_window,
                     span_type=excluded.span_type,
-                    micro_summary=excluded.micro_summary,
+                    summary=excluded.summary,
                     entities_json=excluded.entities_json,
                     topics_json=excluded.topics_json,
                     salience_score=excluded.salience_score,
                     start_anchor_quote=excluded.start_anchor_quote,
                     end_anchor_quote=excluded.end_anchor_quote,
                     key_quote=excluded.key_quote,
-                    overlap_reason=excluded.overlap_reason,
                     span_start_idx=excluded.span_start_idx,
                     span_end_idx=excluded.span_end_idx,
                     located_text=excluded.located_text,
@@ -727,14 +726,13 @@ class SQLiteStore:
                     span.window_start,
                     span.window_end,
                     span.span_type,
-                    span.micro_summary,
+                    span.summary,
                     json.dumps(span.entities, ensure_ascii=False),
                     json.dumps(span.topics, ensure_ascii=False),
                     span.salience_score,
                     span.start_anchor_quote,
                     span.end_anchor_quote,
                     span.key_quote,
-                    span.overlap_reason,
                     span.span_start_idx,
                     span.span_end_idx,
                     span.located_text,
@@ -968,7 +966,7 @@ class SQLiteStore:
                 """
                 INSERT INTO center_span_clusters (
                     cluster_id, document_id, center_span_id, cluster_name, cluster_type,
-                    micro_summary, member_span_ids_json, confidence, status, created_at
+                    summary, member_span_ids_json, confidence, status, created_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -979,7 +977,7 @@ class SQLiteStore:
                         cluster.center_span_id,
                         cluster.cluster_name,
                         cluster.cluster_type,
-                        cluster.micro_summary,
+                        cluster.summary,
                         json.dumps(cluster.member_span_ids, ensure_ascii=False),
                         cluster.confidence,
                         cluster.status,
@@ -1178,6 +1176,55 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    if not _table_exists(connection, table_name):
+        return set()
+    rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _reset_stale_extraction_tables(connection: sqlite3.Connection) -> None:
+    span_columns = _table_columns(connection, "spans")
+    if not span_columns:
+        return
+    required_columns = {
+        "span_id",
+        "document_id",
+        "chapter_id",
+        "window_id",
+        "span_index_in_window",
+        "window_start",
+        "window_end",
+        "span_type",
+        "summary",
+        "entities_json",
+        "topics_json",
+        "salience_score",
+        "start_anchor_quote",
+        "end_anchor_quote",
+        "key_quote",
+        "span_start_idx",
+        "span_end_idx",
+        "located_text",
+        "locator_confidence",
+        "locator_status",
+        "created_at",
+    }
+    stale_columns_present = bool({"micro_summary", "overlap_reason"} & span_columns)
+    missing_required_columns = not required_columns.issubset(span_columns)
+    if not stale_columns_present and not missing_required_columns:
+        return
+    connection.executescript(
+        """
+        DROP TABLE IF EXISTS locator_candidates;
+        DROP TABLE IF EXISTS extraction_failures;
+        DROP TABLE IF EXISTS center_span_clusters;
+        DROP TABLE IF EXISTS span_edges;
+        DROP TABLE IF EXISTS spans;
+        """
+    )
+
+
 def _ensure_column(
     connection: sqlite3.Connection,
     *,
@@ -1201,14 +1248,13 @@ def _span_from_row(row: sqlite3.Row) -> Span:
         window_start=row["window_start"],
         window_end=row["window_end"],
         span_type=row["span_type"],
-        micro_summary=row["micro_summary"],
+        summary=row["summary"],
         entities=json.loads(row["entities_json"]),
         topics=json.loads(row["topics_json"]),
         salience_score=row["salience_score"],
         start_anchor_quote=row["start_anchor_quote"],
         end_anchor_quote=row["end_anchor_quote"],
         key_quote=row["key_quote"],
-        overlap_reason=row["overlap_reason"],
         span_start_idx=row["span_start_idx"],
         span_end_idx=row["span_end_idx"],
         located_text=row["located_text"],
@@ -1225,7 +1271,7 @@ def _cluster_from_row(row: sqlite3.Row) -> CenterSpanCluster:
         center_span_id=row["center_span_id"],
         cluster_name=row["cluster_name"],
         cluster_type=row["cluster_type"],
-        micro_summary=row["micro_summary"],
+        summary=row["summary"],
         member_span_ids=json.loads(row["member_span_ids_json"]),
         confidence=row["confidence"],
         status=row["status"],

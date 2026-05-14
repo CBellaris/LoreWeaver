@@ -157,7 +157,7 @@ def command_specs() -> dict[str, Any]:
         },
         "windows": {
             "label": "Windows",
-            "fields": ["document_id", "window_size", "overlap_ratio", "min_chars", "max_chars", "by_chapter"],
+            "fields": ["document_id", "window_mode", "window_size", "overlap_ratio", "min_chars", "max_chars"],
         },
         "extract": {
             "label": "Extract",
@@ -176,9 +176,6 @@ def command_specs() -> dict[str, Any]:
                 "batch_poll_interval",
                 "batch_timeout",
                 "batch_completion_window",
-                "repair_failed",
-                "span_chars_min",
-                "span_chars_max",
             ],
         },
         "index": {"label": "Index", "fields": ["document_id", "limit", "mock_embeddings"]},
@@ -301,7 +298,7 @@ def _dispatch_inner(
             overlap_ratio=_optional_float(payload.get("overlap_ratio")),
             min_window_chars=_optional_int(payload.get("min_chars")),
             max_window_chars=_optional_int(payload.get("max_chars")),
-            split_by_chapter=bool(payload.get("by_chapter")),
+            window_mode=_optional_str(payload.get("window_mode")),
             progress=progress.child(command="windows") if progress is not None else None,
         )
     if command == "extract":
@@ -330,9 +327,6 @@ def _dispatch_inner(
             batch_poll_interval_seconds=float(payload.get("batch_poll_interval") or 30.0),
             batch_timeout_seconds=_optional_float(payload.get("batch_timeout")),
             batch_completion_window=str(payload.get("batch_completion_window") or "24h"),
-            repair_failed=bool(payload.get("repair_failed")),
-            span_chars_min=_optional_int(payload.get("span_chars_min")),
-            span_chars_max=_optional_int(payload.get("span_chars_max")),
             progress=progress,
         )
     if command == "index":

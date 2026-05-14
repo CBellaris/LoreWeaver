@@ -393,7 +393,7 @@ def _cluster_summaries(
                 "cluster_id": cluster.cluster_id,
                 "cluster_name": cluster.cluster_name,
                 "cluster_type": cluster.cluster_type,
-                "summary": cluster.micro_summary,
+                "summary": cluster.summary,
             }
         )
     return summaries

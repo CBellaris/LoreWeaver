@@ -91,7 +91,7 @@ def _replace_graph_tx(
             SET s.document_id = $document_id,
                 s.chapter_id = $chapter_id,
                 s.span_type = $span_type,
-                s.micro_summary = $micro_summary,
+                s.summary = $summary,
                 s.span_start_idx = $span_start_idx,
                 s.span_end_idx = $span_end_idx
             """,
@@ -99,7 +99,7 @@ def _replace_graph_tx(
             document_id=span.document_id,
             chapter_id=span.chapter_id,
             span_type=span.span_type,
-            micro_summary=span.micro_summary,
+            summary=span.summary,
             span_start_idx=span.span_start_idx,
             span_end_idx=span.span_end_idx,
         )
@@ -111,7 +111,7 @@ def _replace_graph_tx(
                 c.center_span_id = $center_span_id,
                 c.cluster_name = $cluster_name,
                 c.cluster_type = $cluster_type,
-                c.micro_summary = $micro_summary,
+                c.summary = $summary,
                 c.confidence = $confidence,
                 c.status = $status
             """,
@@ -120,7 +120,7 @@ def _replace_graph_tx(
             center_span_id=cluster.center_span_id,
             cluster_name=cluster.cluster_name,
             cluster_type=cluster.cluster_type,
-            micro_summary=cluster.micro_summary,
+            summary=cluster.summary,
             confidence=cluster.confidence,
             status=cluster.status,
         )
