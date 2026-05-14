@@ -203,7 +203,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--batch-model",
         default=None,
         help=(
-            "Model used for batch extraction. Defaults to models.extraction.batch_name "
+            "Model used for batch extraction. Defaults to services.extraction.batch_model "
             "from the models config."
         ),
     )

@@ -9,14 +9,11 @@ from typing import Any
 
 from loreweaver.config import AppConfig
 from loreweaver.indexing.embeddings import (
-    EmbeddingClient,
-    EmbeddingSettings,
-    MockEmbeddingClient,
-    OpenAICompatibleEmbeddingClient,
     build_embedding_input,
     embedding_cache_key,
-    embedding_settings_from_configs,
 )
+from loreweaver.model_services import EmbeddingResult, ModelServiceFactory
+from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
 from loreweaver.models.span import Span
 from loreweaver.progress import ProgressReporter
 from loreweaver.storage.bm25_store import BM25Index, bm25_index_path
@@ -56,21 +53,23 @@ def build_m14_indexes(
             "Run loreweaver extract first."
         )
 
-    embedding_settings = embedding_settings_from_configs(config=config, models_config=models_config)
+    factory = ModelServiceFactory.from_configs(config=config, models_config=models_config)
+    embedding_settings = factory.resolve("embedding")
     effective_settings = embedding_settings
-    client: EmbeddingClient
     if mock_embeddings:
-        client = MockEmbeddingClient(dimensions=embedding_settings.expected_dimensions or 8)
+        client = factory.embedding("embedding", mock=True)
         effective_settings = replace(
             embedding_settings,
-            provider="mock",
+            provider=ProviderConfig(
+                name="mock",
+                adapter="mock",
+                api_key_env=None,
+                base_url=None,
+            ),
             model=f"mock::{embedding_settings.model}",
-            api_key_env=None,
-            base_url=None,
-            input_yuan_per_1k=0.0,
         )
     else:
-        client = OpenAICompatibleEmbeddingClient(embedding_settings)
+        client = factory.embedding("embedding")
 
     if progress is not None:
         progress.emit(
@@ -137,7 +136,7 @@ def build_m14_indexes(
         "sqlite_path": str(storage_config.sqlite_path),
         "located_span_count": len(spans),
         "embedding": {
-            "provider": effective_settings.provider,
+            "provider": effective_settings.provider.name,
             "model": effective_settings.model,
             "dimensions": vector_size,
             "batch_size": effective_settings.batch_size,
@@ -184,8 +183,8 @@ def embed_spans(
     *,
     store: SQLiteStore,
     spans: list[Span],
-    settings: EmbeddingSettings,
-    client: EmbeddingClient,
+    settings: ModelServiceConfig,
+    client: Any,
     config: AppConfig,
     progress: ProgressReporter | None = None,
 ) -> tuple[list[EmbeddedSpan], dict[str, float]]:
@@ -234,7 +233,7 @@ def embed_spans(
                     "batch_size": len(batch),
                 },
             )
-        response = client.embed_texts([item[1] for item in batch])
+        response: EmbeddingResult = client.embed([item[1] for item in batch])
         if len(response.vectors) != len(batch):
             raise ValueError(
                 f"Embedding response count mismatch: expected {len(batch)}, "
@@ -245,7 +244,7 @@ def embed_spans(
             normalized_vector = [float(value) for value in vector]
             store.upsert_embedding_cache(
                 cache_key=cache_key,
-                provider=settings.provider,
+                provider=settings.provider.name,
                 model=settings.model,
                 input_sha256=input_sha256,
                 input_text=input_text,
@@ -263,7 +262,7 @@ def embed_spans(
         raise ValueError("Internal embedding error: not all spans received vectors.")
     return finalized, {
         "input_tokens": float(input_tokens),
-        "estimated_cost_yuan": (input_tokens / 1000.0) * settings.input_yuan_per_1k,
+        "estimated_cost_yuan": (input_tokens / 1000.0) * settings.pricing.input_yuan_per_1k,
     }
 
 
@@ -280,13 +279,10 @@ def search_vector_index(
     store = SQLiteStore(storage_config.sqlite_path)
     store.initialize()
     document = store.get_document(document_id)
-    settings = embedding_settings_from_configs(config=config, models_config=models_config)
-    client: EmbeddingClient
-    if mock_embeddings:
-        client = MockEmbeddingClient(dimensions=settings.expected_dimensions or 8)
-    else:
-        client = OpenAICompatibleEmbeddingClient(settings)
-    query_vector = client.embed_texts([query]).vectors[0]
+    factory = ModelServiceFactory.from_configs(config=config, models_config=models_config)
+    settings = factory.resolve("embedding")
+    client = factory.embedding("embedding", mock=mock_embeddings)
+    query_vector = client.embed([query]).vectors[0]
 
     qdrant_store = QdrantVectorStore.from_config(storage_config, document_id=document.document_id)
     try:

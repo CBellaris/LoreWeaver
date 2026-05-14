@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,9 +24,8 @@ from loreweaver.extraction.locator import (
 from loreweaver.extraction.prompts import build_extraction_messages
 from loreweaver.extraction.retry import RetryPolicy
 from loreweaver.extraction.schemas import SpanCandidatePayload, WindowExtractionPayload
-from loreweaver.model_services import ChatRequest, resolve_model_service
-from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
-from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
+from loreweaver.model_services import ChatRequest, ChatResult, ModelServiceFactory
+from loreweaver.model_services.types import BatchStatus, BatchSubmission
 from loreweaver.models.span import Span
 from loreweaver.models.window import CandidateWindow
 from loreweaver.progress import ProgressReporter
@@ -38,34 +37,11 @@ BATCH_LIVE_RETRY_THRESHOLD_DEFAULT = 8
 BATCH_RETRY_MAX_ROUNDS_DEFAULT = 3
 
 class ChatClient(Protocol):
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        model: str,
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
+    provider: str
+    model: str
+
+    def complete(self, request: ChatRequest) -> ChatResult:
         """Return raw JSON text and token usage."""
-
-
-@dataclass(frozen=True)
-class BatchSubmission:
-    batch_id: str
-    input_file_id: str
-    status: str
-    output_file_id: str | None
-    error_file_id: str | None
-    request_counts: dict[str, int]
-
-
-@dataclass(frozen=True)
-class BatchStatus:
-    batch_id: str
-    status: str
-    input_file_id: str | None
-    output_file_id: str | None
-    error_file_id: str | None
-    request_counts: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -116,83 +92,14 @@ class WindowPayloadParseError(ValueError):
     """Raised when a full window payload cannot be parsed or schema-validated."""
 
 
-class OpenAIChatClient:
-    """OpenAI-compatible chat client used for OpenAI and SiliconFlow."""
-
-    def __init__(
-        self,
-        *,
-        api_key_env: str,
-        provider: str = "openai",
-        base_url: str | None = None,
-        json_response_format: bool = False,
-    ) -> None:
-        self._json_response_format = json_response_format
-        service_config = ModelServiceConfig(
-            service="extraction",
-            capability="chat",
-            provider=ProviderConfig(
-                name=provider,
-                adapter="openai_compatible",
-                api_key_env=api_key_env,
-                base_url=base_url,
-            ),
-            model="",
-            json_response_format=json_response_format,
-        )
-        self._client = OpenAICompatibleClient(service_config)
-
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        model: str,
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        result = self._client.complete(
-            ChatRequest(
-                messages=messages,
-                temperature=temperature,
-                response_format="json_object" if self._json_response_format else "none",
-                extra={"model": model},
-            )
-        )
-        return result.content, result.usage
-
-    def submit_chat_batch(
-        self,
-        *,
-        input_path: Path,
-        completion_window: str = "24h",
-        metadata: dict[str, str] | None = None,
-    ) -> BatchSubmission:
-        submission = self._client.submit_chat_batch(
-            input_path=input_path,
-            completion_window=completion_window,
-            metadata=metadata,
-        )
-        return BatchSubmission(**asdict(submission))
-
-    def retrieve_chat_batch(self, batch_id: str) -> BatchStatus:
-        status = self._client.retrieve_chat_batch(batch_id)
-        return BatchStatus(**asdict(status))
-
-    def download_file_text(self, file_id: str) -> str:
-        return self._client.download_file_text(file_id)
-
-
 class MockChatClient:
     """Deterministic local extractor for tests and dry M1.3 plumbing checks."""
 
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        model: str,
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        del model, temperature
-        user_text = messages[-1]["content"]
+    provider = "mock"
+    model = "mock-extractor"
+
+    def complete(self, request: ChatRequest) -> ChatResult:
+        user_text = request.messages[-1]["content"]
         match = re.search(r"<<<WINDOW_TEXT\n(?P<text>.*)\nWINDOW_TEXT>>>", user_text, re.S)
         window_text = match.group("text") if match else user_text
         compact = " ".join(window_text.split())
@@ -230,7 +137,12 @@ class MockChatClient:
             "output_tokens": estimate_tokens(raw),
             "total_tokens": estimate_tokens(user_text) + estimate_tokens(raw),
         }
-        return raw, usage
+        return ChatResult(
+            content=raw,
+            usage=usage,
+            provider=self.provider,
+            model=self.model,
+        )
 
 
 def extract_document_windows(
@@ -318,22 +230,21 @@ def extract_document_windows(
     fuzzy_threshold = float(locator_config.get("fuzzy_threshold", 0.86))
     price = _token_price(model_settings, batch_mode=batch_mode)
 
+    factory = ModelServiceFactory.from_configs(models_config=models_config)
     client: ChatClient
     if mock:
         client = MockChatClient()
     else:
-        client = OpenAIChatClient(
-            api_key_env=str(model_settings["api_key_env"]),
-            provider=str(model_settings["provider"]),
-            base_url=model_settings.get("base_url"),
-            json_response_format=bool(model_settings.get("json_response_format", False)),
-        )
+        client = factory.chat("extraction")
 
     if batch or batch_id:
         if mock:
             raise ValueError("Batch extraction is only supported for live OpenAI-compatible clients.")
-        if not isinstance(client, OpenAIChatClient):
-            raise ValueError("Batch extraction requires OpenAIChatClient.")
+        if not all(
+            hasattr(client, name)
+            for name in ("submit_chat_batch", "retrieve_chat_batch", "download_file_text")
+        ):
+            raise ValueError("Batch extraction requires a batch-capable chat client.")
         batch_report = _run_batch_extraction(
             store=store,
             config=config,
@@ -344,6 +255,7 @@ def extract_document_windows(
             client=client,
             model_name=model_name,
             temperature=temperature,
+            json_response_format=bool(model_settings.get("json_response_format", False)),
             retry_policy=retry_policy,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
@@ -558,9 +470,10 @@ def _run_batch_extraction(
     run_id: str,
     document: Any,
     windows: list[CandidateWindow],
-    client: OpenAIChatClient,
+    client: Any,
     model_name: str,
     temperature: float,
+    json_response_format: bool,
     retry_policy: RetryPolicy,
     anchor_min_chars: int,
     anchor_max_chars: int,
@@ -597,7 +510,7 @@ def _run_batch_extraction(
             temperature=temperature,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
-            json_response_format=client._json_response_format,
+            json_response_format=json_response_format,
         )
         if progress is not None:
             progress.emit(
@@ -754,8 +667,9 @@ def _run_batch_extraction(
             retry_round=retry_round,
             windows=pending_windows,
             client=client,
-            model_name=model_name,
-            temperature=temperature,
+                model_name=model_name,
+                temperature=temperature,
+                json_response_format=json_response_format,
             anchor_min_chars=anchor_min_chars,
             anchor_max_chars=anchor_max_chars,
             batch_poll_interval_seconds=batch_poll_interval_seconds,
@@ -881,7 +795,7 @@ def _run_batch_extraction(
 
 def _wait_for_batch_status(
     *,
-    client: OpenAIChatClient,
+    client: Any,
     batch_id: str,
     wait: bool,
     poll_interval_seconds: float,
@@ -920,9 +834,10 @@ def _run_batch_retry_round(
     run_id: str,
     retry_round: int,
     windows: list[CandidateWindow],
-    client: OpenAIChatClient,
+    client: Any,
     model_name: str,
     temperature: float,
+    json_response_format: bool,
     anchor_min_chars: int,
     anchor_max_chars: int,
     batch_poll_interval_seconds: float,
@@ -940,7 +855,7 @@ def _run_batch_retry_round(
         temperature=temperature,
         anchor_min_chars=anchor_min_chars,
         anchor_max_chars=anchor_max_chars,
-        json_response_format=client._json_response_format,
+        json_response_format=json_response_format,
     )
     if progress is not None:
         progress.emit(
@@ -1674,42 +1589,6 @@ def _optional_str(value: Any) -> str | None:
     return str(value)
 
 
-def _uploaded_file_id(uploaded: Any) -> str:
-    file_id = getattr(uploaded, "id", None)
-    if file_id:
-        return str(file_id)
-    data = getattr(uploaded, "data", None)
-    if isinstance(data, dict) and data.get("id"):
-        return str(data["id"])
-    if isinstance(uploaded, dict):
-        if uploaded.get("id"):
-            return str(uploaded["id"])
-        nested_data = uploaded.get("data")
-        if isinstance(nested_data, dict) and nested_data.get("id"):
-            return str(nested_data["id"])
-    raise ValueError("Provider file upload response did not include a file id.")
-
-
-def _request_counts_dict(value: Any) -> dict[str, int]:
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        items = value.items()
-    else:
-        items = (
-            (name, getattr(value, name, 0))
-            for name in ("total", "completed", "failed")
-            if hasattr(value, name)
-        )
-    counts: dict[str, int] = {}
-    for key, raw_count in items:
-        try:
-            counts[str(key)] = int(raw_count or 0)
-        except (TypeError, ValueError):
-            continue
-    return counts
-
-
 def _select_windows(
     windows: list[CandidateWindow],
     *,
@@ -1792,11 +1671,15 @@ def extract_window(
                         "attempt": attempt,
                     },
                 )
-            raw_output, usage = client.complete_json(
-                messages=messages,
-                model=model,
-                temperature=temperature,
+            result = client.complete(
+                ChatRequest(
+                    messages=messages,
+                    temperature=temperature,
+                    extra={"model": model},
+                )
             )
+            raw_output = result.content
+            usage = result.usage
             if progress is not None:
                 progress.emit(
                     "api_done",
@@ -1969,13 +1852,11 @@ def _format_uncovered_block(window: CandidateWindow, start: int, end: int) -> st
 
 
 def _model_settings(models_config: AppConfig) -> dict[str, Any]:
-    service_config = resolve_model_service(models_config=models_config, service="extraction")
+    service_config = ModelServiceFactory.from_configs(models_config=models_config).resolve("extraction")
     return {
         "provider": service_config.provider.name,
         "model": service_config.model or "gpt-4o-mini",
         "temperature": 0 if service_config.temperature is None else service_config.temperature,
-        "api_key_env": service_config.api_key_env or "OPENAI_API_KEY",
-        "base_url": service_config.base_url,
         "input_yuan_per_1k": service_config.pricing.input_yuan_per_1k,
         "output_yuan_per_1k": service_config.pricing.output_yuan_per_1k,
         "json_response_format": service_config.json_response_format,
@@ -2275,6 +2156,3 @@ def _build_report(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-
-def _asdict_cost(cost: CostEstimate) -> dict[str, Any]:
-    return asdict(cost)

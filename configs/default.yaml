@@ -27,7 +27,7 @@ window:
 
 extraction:
   max_retries: 2
-  batch_live_retry_threshold: 5
+  batch_live_retry_threshold: 3
   batch_retry_max_rounds: 3
   anchor_min_chars: 4
   anchor_max_chars: 80

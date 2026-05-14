@@ -45,16 +45,23 @@ class M16RetrievalTests(unittest.TestCase):
             models_config = AppConfig(
                 path=root / "models.yaml",
                 values={
-                    "providers": {"siliconflow": {"api_key_env": "SILICONFLOW_API_KEY"}},
-                    "models": {
+                    "providers": {
+                        "siliconflow": {
+                            "adapter": "openai_compatible",
+                            "api_key_env": "SILICONFLOW_API_KEY",
+                        }
+                    },
+                    "services": {
                         "embedding": {
+                            "capability": "embedding",
                             "provider": "siliconflow",
-                            "name": "Qwen/Qwen3-Embedding-0.6B",
+                            "model": "Qwen/Qwen3-Embedding-0.6B",
                             "expected_dimensions": 8,
                         },
                         "reranker": {
+                            "capability": "rerank",
                             "provider": "siliconflow",
-                            "name": "Qwen/Qwen3-Reranker-0.6B",
+                            "model": "Qwen/Qwen3-Reranker-0.6B",
                             "enabled": False,
                         },
                     },

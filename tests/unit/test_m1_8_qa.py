@@ -5,6 +5,7 @@ import sqlite3
 import unittest
 
 from loreweaver.config import AppConfig
+from loreweaver.model_services import ChatRequest, ChatResult
 from loreweaver.models.chapter import Chapter
 from loreweaver.models.document import Document
 from loreweaver.qa.answerer import (
@@ -96,10 +97,16 @@ class M18QATests(unittest.TestCase):
                         "base_url": "https://api.siliconflow.cn/v1",
                     }
                 },
-                "models": {
-                    "qa": {
+                "model_profiles": {
+                    "qa_model": {
+                        "capability": "chat",
                         "provider": "siliconflow",
-                        "name": "deepseek-ai/DeepSeek-V3.2",
+                        "model": "deepseek-ai/DeepSeek-V3.2",
+                    }
+                },
+                "services": {
+                    "qa": {
+                        "profile": "qa_model",
                     }
                 },
             },
@@ -109,7 +116,6 @@ class M18QATests(unittest.TestCase):
 
         self.assertEqual(settings["provider"], "siliconflow")
         self.assertEqual(settings["model"], "deepseek-ai/DeepSeek-V3.2")
-        self.assertEqual(settings["api_key_env"], "SILICONFLOW_API_KEY")
 
 
 def _setup_store(
@@ -130,8 +136,15 @@ def _setup_store(
     models_config = AppConfig(
         path=root / "models.yaml",
         values={
-            "providers": {"mock": {"api_key_env": "MOCK_API_KEY"}},
-            "models": {"qa": {"provider": "mock", "name": "mock-answerer", "temperature": 0}},
+            "providers": {"mock": {"adapter": "mock"}},
+            "services": {
+                "qa": {
+                    "capability": "chat",
+                    "provider": "mock",
+                    "model": "mock-answerer",
+                    "temperature": 0,
+                }
+            },
         },
     )
     normalized_path = root / "normalized.txt"
@@ -236,17 +249,14 @@ class RepairingAnswerClient(AnswerClient):
     def __init__(self) -> None:
         self.calls = 0
 
-    def complete(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        del messages, temperature
+    def complete(self, request: ChatRequest) -> ChatResult:
+        del request
         self.calls += 1
         if self.calls == 1:
-            return "结论：错误引用 [E099]", {}
-        return "结论：修复后引用 [E001]", {}
+            content = "结论：错误引用 [E099]"
+        else:
+            content = "结论：修复后引用 [E001]"
+        return ChatResult(content=content, usage={}, provider=self.provider, model=self.model)
 
 
 if __name__ == "__main__":

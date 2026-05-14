@@ -6,11 +6,8 @@ from dataclasses import replace
 from typing import Any
 
 from loreweaver.config import AppConfig
-from loreweaver.indexing.embeddings import (
-    MockEmbeddingClient,
-    OpenAICompatibleEmbeddingClient,
-    embedding_settings_from_configs,
-)
+from loreweaver.model_services import ModelServiceFactory
+from loreweaver.model_services.config import ProviderConfig
 from loreweaver.retrieval.models import RetrievalHit
 from loreweaver.storage.qdrant_store import QdrantVectorStore
 from loreweaver.storage.sqlite_store import SQLiteStore
@@ -27,15 +24,25 @@ def retrieve_vector(
     top_k: int,
     mock_embeddings: bool = False,
 ) -> tuple[list[RetrievalHit], dict[str, Any]]:
-    settings = embedding_settings_from_configs(config=config, models_config=models_config)
+    factory = ModelServiceFactory.from_configs(config=config, models_config=models_config)
+    settings = factory.resolve("embedding")
     try:
         if mock_embeddings:
-            client = MockEmbeddingClient(dimensions=settings.expected_dimensions or 8)
-            effective_settings = replace(settings, provider="mock", model=f"mock::{settings.model}")
+            client = factory.embedding("embedding", mock=True)
+            effective_settings = replace(
+                settings,
+                provider=ProviderConfig(
+                    name="mock",
+                    adapter="mock",
+                    api_key_env=None,
+                    base_url=None,
+                ),
+                model=f"mock::{settings.model}",
+            )
         else:
-            client = OpenAICompatibleEmbeddingClient(settings)
+            client = factory.embedding("embedding")
             effective_settings = settings
-        query_vector = client.embed_texts([question]).vectors[0]
+        query_vector = client.embed([question]).vectors[0]
         qdrant_store = QdrantVectorStore.from_config(storage_config, document_id=document_id)
     except Exception as error:
         return [], {
@@ -73,7 +80,7 @@ def retrieve_vector(
             metadata={
                 "rank": index + 1,
                 "payload": result.payload,
-                "embedding_provider": effective_settings.provider,
+                "embedding_provider": effective_settings.provider.name,
                 "embedding_model": effective_settings.model,
             },
         )

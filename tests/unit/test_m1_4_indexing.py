@@ -86,16 +86,18 @@ class M14IndexingTests(unittest.TestCase):
             models_config = AppConfig(
                 path=root / "models.yaml",
                 values={
-                    "providers": {"mock": {}},
-                    "models": {
+                    "providers": {"mock": {"adapter": "mock"}},
+                    "services": {
                         "extraction": {
+                            "capability": "chat",
                             "provider": "mock",
-                            "name": "mock",
+                            "model": "mock",
                             "temperature": 0,
                         },
                         "embedding": {
+                            "capability": "embedding",
                             "provider": "mock",
-                            "name": "mock-embedding",
+                            "model": "mock-embedding",
                             "expected_dimensions": 8,
                             "batch_size": 2,
                         },

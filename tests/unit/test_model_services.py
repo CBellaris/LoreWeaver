@@ -1,12 +1,14 @@
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 from loreweaver.config import AppConfig
 from loreweaver.model_services import resolve_model_service
+from loreweaver.model_services.clients.openai_compatible import _uploaded_file_id
 
 
 class ModelServiceConfigTests(unittest.TestCase):
-    def test_resolves_legacy_model_config(self) -> None:
+    def test_requires_canonical_service_config(self) -> None:
         config = AppConfig(
             path=Path("models.yaml"),
             values={
@@ -16,23 +18,11 @@ class ModelServiceConfigTests(unittest.TestCase):
                         "base_url": "https://api.siliconflow.cn/v1",
                     }
                 },
-                "models": {
-                    "embedding": {
-                        "provider": "siliconflow",
-                        "name": "Qwen/Qwen3-Embedding-0.6B",
-                        "expected_dimensions": 1024,
-                        "batch_size": 16,
-                    }
-                },
             },
         )
 
-        service = resolve_model_service(models_config=config, service="embedding")
-
-        self.assertEqual(service.provider.name, "siliconflow")
-        self.assertEqual(service.model, "Qwen/Qwen3-Embedding-0.6B")
-        self.assertEqual(service.expected_dimensions, 1024)
-        self.assertEqual(service.batch_size, 16)
+        with self.assertRaisesRegex(ValueError, "not configured"):
+            resolve_model_service(models_config=config, service="embedding")
 
     def test_resolves_profile_based_service_config(self) -> None:
         config = AppConfig(
@@ -65,6 +55,16 @@ class ModelServiceConfigTests(unittest.TestCase):
         self.assertEqual(service.model, "deepseek-v4-pro")
         self.assertEqual(service.temperature, 0.2)
         self.assertEqual(service.max_output_tokens, 384000)
+
+    def test_uploaded_file_id_prefers_siliconflow_nested_data_id(self) -> None:
+        uploaded = SimpleNamespace(id="outer-id", data={"id": "nested-file-id"})
+
+        self.assertEqual(_uploaded_file_id(uploaded), "nested-file-id")
+
+    def test_uploaded_file_id_accepts_openai_style_id(self) -> None:
+        uploaded = SimpleNamespace(id="file-openai")
+
+        self.assertEqual(_uploaded_file_id(uploaded), "file-openai")
 
 
 if __name__ == "__main__":

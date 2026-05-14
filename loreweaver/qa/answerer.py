@@ -11,9 +11,7 @@ from typing import Any, Protocol
 from loreweaver.config import AppConfig
 from loreweaver.evidence.assembler import assemble_evidence_pack_from_retrieval_report
 from loreweaver.logging import new_run_id
-from loreweaver.model_services import ChatRequest, ModelServiceFactory, resolve_model_service
-from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
-from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
+from loreweaver.model_services import ChatRequest, ChatResult, ModelServiceFactory
 from loreweaver.progress import ProgressReporter
 from loreweaver.qa.prompts import build_answer_messages, build_repair_messages
 from loreweaver.retrieval.pipeline import retrieve_m16
@@ -26,12 +24,7 @@ class AnswerClient(Protocol):
     provider: str
     model: str
 
-    def complete(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
+    def complete(self, request: ChatRequest) -> ChatResult:
         """Return answer text and token usage."""
 
 
@@ -42,56 +35,6 @@ class AnswerValidation:
     errors: list[str]
 
 
-class OpenAICompatibleAnswerClient:
-    """OpenAI-compatible chat client for final evidence-grounded answers."""
-
-    def __init__(
-        self,
-        *,
-        provider: str,
-        model: str,
-        api_key_env: str,
-        base_url: str | None = None,
-    ) -> None:
-        self.provider = provider
-        self.model = model
-        service_config = ModelServiceConfig(
-            service="qa",
-            capability="chat",
-            provider=ProviderConfig(
-                name=provider,
-                adapter="openai_compatible",
-                api_key_env=api_key_env,
-                base_url=base_url,
-            ),
-            model=model,
-        )
-        self._client = OpenAICompatibleClient(service_config)
-
-    @classmethod
-    def from_config(cls, service_config: ModelServiceConfig) -> "OpenAICompatibleAnswerClient":
-        api_key_env = service_config.api_key_env
-        if not api_key_env:
-            raise ValueError(f"Provider {service_config.provider.name} does not define api_key_env")
-        return cls(
-            provider=service_config.provider.name,
-            model=service_config.model,
-            api_key_env=api_key_env,
-            base_url=service_config.base_url,
-        )
-
-    def complete(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        result = self._client.complete(
-            ChatRequest(messages=messages, temperature=temperature),
-        )
-        return result.content, result.usage
-
-
 class MockAnswerClient:
     """Deterministic local answerer for tests and no-API M1.8 plumbing checks."""
 
@@ -100,14 +43,8 @@ class MockAnswerClient:
     def __init__(self, model: str = "mock-answerer") -> None:
         self.model = model
 
-    def complete(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        del temperature
-        content = messages[-1]["content"]
+    def complete(self, request: ChatRequest) -> ChatResult:
+        content = request.messages[-1]["content"]
         citation_ids = list(dict.fromkeys(_CITATION_REF_PATTERN.findall(content)))
         first = citation_ids[0] if citation_ids else ""
         if not first:
@@ -130,7 +67,12 @@ class MockAnswerClient:
             "output_tokens": _estimate_tokens(answer),
             "total_tokens": _estimate_tokens(content) + _estimate_tokens(answer),
         }
-        return answer, usage
+        return ChatResult(
+            content=answer,
+            usage=usage,
+            provider=self.provider,
+            model=self.model,
+        )
 
 
 def ask_m18(
@@ -212,19 +154,14 @@ def answer_evidence_pack(
     valid_citations = [str(block["citation_id"]) for block in evidence_blocks]
     cluster_summaries = _cluster_summaries(store, document_id, pack.get("cluster_ids", []))
 
+    factory = ModelServiceFactory.from_configs(config=config, models_config=models_config)
     qa_settings = _qa_settings(config=config, models_config=models_config)
     if answer_client is not None:
         client = answer_client
     elif mock_answer:
         client = MockAnswerClient(model=f"mock::{qa_settings['model']}")
     else:
-        client = OpenAICompatibleAnswerClient.from_config(
-            resolve_model_service(
-                models_config=models_config,
-                app_config=config,
-                service="qa",
-            )
-        )
+        client = factory.chat("qa")
 
     messages = build_answer_messages(
         question=question,
@@ -247,7 +184,9 @@ def answer_evidence_pack(
                 "mock": mock_answer,
             },
         )
-    answer, usage = client.complete(messages=messages, temperature=qa_settings["temperature"])
+    result = client.complete(ChatRequest(messages=messages, temperature=qa_settings["temperature"]))
+    answer = result.content
+    usage = result.usage
     validation = validate_answer_citations(
         answer,
         valid_citation_ids=valid_citations,
@@ -272,10 +211,11 @@ def answer_evidence_pack(
             validation_errors=validation.errors,
             evidence_blocks=evidence_blocks,
         )
-        repaired_answer, repair_usage = client.complete(
-            messages=repair_messages,
-            temperature=qa_settings["temperature"],
+        repair_result = client.complete(
+            ChatRequest(messages=repair_messages, temperature=qa_settings["temperature"])
         )
+        repaired_answer = repair_result.content
+        repair_usage = repair_result.usage
         repaired_validation = validate_answer_citations(
             repaired_answer,
             valid_citation_ids=valid_citations,
@@ -374,8 +314,6 @@ def _qa_settings(*, config: AppConfig, models_config: AppConfig) -> dict[str, An
     return {
         "provider": service_config.provider.name,
         "model": service_config.model or "gpt-4o",
-        "api_key_env": str(service_config.api_key_env or "OPENAI_API_KEY"),
-        "base_url": service_config.base_url,
         "temperature": float(service_config.temperature or 0),
         "require_citations": bool(extra.get("require_citations", True)),
     }

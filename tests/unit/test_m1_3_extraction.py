@@ -22,6 +22,7 @@ from loreweaver.extraction.locator import locate_quote, locate_span_anchors
 from loreweaver.extraction.retry import RetryPolicy
 from loreweaver.ingest.pipeline import ingest_text
 from loreweaver.ingest.window_splitter import build_candidate_windows
+from loreweaver.model_services import ChatRequest, ChatResult
 from loreweaver.models.window import CandidateWindow
 from loreweaver.storage.sqlite_store import SQLiteStore
 
@@ -30,15 +31,14 @@ class StaticJsonClient:
     def __init__(self, raw_output: str) -> None:
         self.raw_output = raw_output
 
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        model: str,
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        del messages, model, temperature
-        return self.raw_output, {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20}
+    def complete(self, request: ChatRequest) -> ChatResult:
+        del request
+        return ChatResult(
+            content=self.raw_output,
+            usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            provider="static",
+            model="static",
+        )
 
 
 class SequencedJsonClient:
@@ -46,16 +46,15 @@ class SequencedJsonClient:
         self.raw_outputs = list(raw_outputs)
         self.calls = 0
 
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        model: str,
-        temperature: float,
-    ) -> tuple[str, dict[str, int]]:
-        del messages, model, temperature
+    def complete(self, request: ChatRequest) -> ChatResult:
+        del request
         self.calls += 1
-        return self.raw_outputs.pop(0), {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15}
+        return ChatResult(
+            content=self.raw_outputs.pop(0),
+            usage={"input_tokens": 7, "output_tokens": 8, "total_tokens": 15},
+            provider="sequenced",
+            model="sequenced",
+        )
 
 
 class M13ExtractionTests(unittest.TestCase):
@@ -631,13 +630,9 @@ class M13ExtractionTests(unittest.TestCase):
                         "max_chars": 800,
                     },
                     "extraction": {
-                        "model": "stale-default-model",
-                        "temperature": 1,
                         "max_retries": 0,
                         "anchor_min_chars": 8,
                         "anchor_max_chars": 80,
-                        "input_yuan_per_1k": 999,
-                        "output_yuan_per_1k": 999,
                     },
                     "locator": {"fuzzy_threshold": 0.86},
                 },
@@ -649,14 +644,17 @@ class M13ExtractionTests(unittest.TestCase):
             models_config = AppConfig(
                 path=root / "models.yaml",
                 values={
-                    "providers": {"mock": {"api_key_env": "MOCK_API_KEY"}},
-                    "models": {
+                    "providers": {"mock": {"adapter": "mock"}},
+                    "services": {
                         "extraction": {
+                            "capability": "chat",
                             "provider": "mock",
-                            "name": "mock",
+                            "model": "mock",
                             "temperature": 0,
-                            "input_yuan_per_1k": 0,
-                            "output_yuan_per_1k": 0,
+                            "pricing": {
+                                "input_yuan_per_1k": 0,
+                                "output_yuan_per_1k": 0,
+                            },
                         }
                     },
                 },

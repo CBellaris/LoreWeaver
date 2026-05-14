@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -16,9 +15,7 @@ from loreweaver.eval.question_set import (
     write_question_set,
 )
 from loreweaver.logging import new_run_id
-from loreweaver.model_services import ChatRequest, resolve_model_service
-from loreweaver.model_services.clients.openai_compatible import OpenAICompatibleClient
-from loreweaver.model_services.config import ModelServiceConfig, ProviderConfig
+from loreweaver.model_services import ChatRequest, JsonChatResult, ModelServiceFactory
 from loreweaver.model_services.errors import EmptyModelResponse
 
 
@@ -26,76 +23,12 @@ class QuestionGeneratorClient(Protocol):
     provider: str
     model: str
 
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_output_tokens: int | None,
-        json_response_format: bool,
-    ) -> tuple[dict[str, Any], dict[str, int]]:
+    def complete_json(self, request: ChatRequest) -> JsonChatResult:
         """Return a JSON object and usage metadata."""
 
 
 class EmptyQuestionGenerationResponse(RuntimeError):
     """Raised when a provider returns HTTP 200 without a usable completion."""
-
-
-@dataclass(frozen=True)
-class EvalGeneratorSettings:
-    provider: str
-    model: str
-    api_key_env: str
-    base_url: str | None
-    temperature: float
-    max_output_tokens: int | None
-    json_response_format: bool
-
-
-class OpenAICompatibleQuestionGenerator:
-    """OpenAI-compatible chat client for long-context eval question generation."""
-
-    def __init__(self, settings: EvalGeneratorSettings) -> None:
-        self.provider = settings.provider
-        self.model = settings.model
-        service_config = ModelServiceConfig(
-            service="eval_question_generator",
-            capability="chat",
-            provider=ProviderConfig(
-                name=settings.provider,
-                adapter="openai_compatible",
-                api_key_env=settings.api_key_env,
-                base_url=settings.base_url,
-            ),
-            model=settings.model,
-            temperature=settings.temperature,
-            max_output_tokens=settings.max_output_tokens,
-            json_response_format=settings.json_response_format,
-        )
-        self._client = OpenAICompatibleClient(service_config)
-
-    def complete_json(
-        self,
-        *,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_output_tokens: int | None,
-        json_response_format: bool,
-    ) -> tuple[dict[str, Any], dict[str, int]]:
-        try:
-            result = self._client.complete(
-                ChatRequest(
-                    messages=messages,
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    response_format="json_object" if json_response_format else "none",
-                )
-            )
-        except EmptyModelResponse as error:
-            raise EmptyQuestionGenerationResponse(str(error)) from error
-        content = result.content
-        usage = result.usage
-        return _parse_json_object(content), usage
 
 
 def generate_question_set(
@@ -111,20 +44,27 @@ def generate_question_set(
 ) -> dict[str, Any]:
     """Generate and persist a JSONL chapter-level recall question set."""
     corpus = load_corpus(corpus_path)
-    settings = eval_generator_settings_from_config(models_config)
-    generator = client or OpenAICompatibleQuestionGenerator(settings)
+    factory = ModelServiceFactory.from_configs(config=config, models_config=models_config)
+    settings = factory.resolve("eval_question_generator")
+    generator = client or factory.chat("eval_question_generator")
     profile = normalize_profile(profile)
     messages = build_generation_messages(
         corpus=corpus,
         question_count=question_count,
         profile=profile,
     )
-    payload, usage = generator.complete_json(
+    request = ChatRequest(
         messages=messages,
         temperature=settings.temperature,
         max_output_tokens=max_output_tokens or settings.max_output_tokens,
-        json_response_format=settings.json_response_format,
+        response_format="json_object" if settings.json_response_format else "none",
     )
+    try:
+        result = generator.complete_json(request)
+    except EmptyModelResponse as error:
+        raise EmptyQuestionGenerationResponse(str(error)) from error
+    payload = result.payload
+    usage = result.usage
     questions = _questions_from_generation_payload(payload)
     if output_path is None:
         document_id = corpus["document"]["document_id"]
@@ -324,26 +264,6 @@ broad 题 expected_chapters 不得少于 6 章；pinpoint 题 expected_chapters 
 """.strip()
 
 
-def eval_generator_settings_from_config(models_config: AppConfig) -> EvalGeneratorSettings:
-    service_config = resolve_model_service(
-        models_config=models_config,
-        service="eval_question_generator",
-    )
-    return EvalGeneratorSettings(
-        provider=service_config.provider.name,
-        model=service_config.model or "deepseek-v4-pro",
-        api_key_env=str(service_config.api_key_env or "DEEPSEEK_API_KEY"),
-        base_url=service_config.base_url,
-        temperature=(
-            float(service_config.temperature)
-            if service_config.temperature is not None
-            else 0.2
-        ),
-        max_output_tokens=service_config.max_output_tokens,
-        json_response_format=service_config.json_response_format,
-    )
-
-
 def _questions_from_generation_payload(payload: dict[str, Any]) -> list[EvalQuestion]:
     raw_questions = payload.get("questions")
     if not isinstance(raw_questions, list) or not raw_questions:
@@ -373,73 +293,3 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Generator response must be a JSON object.")
     return payload
-
-
-def _chat_content_from_response(response: Any) -> str:
-    if response is None:
-        raise EmptyQuestionGenerationResponse(
-            "Eval question generation returned a null response from the provider. "
-            "This usually means the long-context request was accepted at HTTP level but "
-            "the provider returned an empty/null body, often because the input/output "
-            "budget was exceeded or the provider timed out internally. "
-            "Try increasing --max-output-tokens, reducing --question-count, or splitting "
-            "the corpus into smaller chapter ranges."
-        )
-    choices = getattr(response, "choices", None) or []
-    if not choices:
-        raise EmptyQuestionGenerationResponse(
-            "Eval question generation returned no choices from the provider. "
-            "This often means the long-context request was rejected, the provider hit an "
-            "internal output/context limit, or it returned an error payload with HTTP 200. "
-            f"Raw response: {_response_excerpt(response)}"
-        )
-
-    choice = choices[0]
-    message = getattr(choice, "message", None)
-    content = getattr(message, "content", None) if message is not None else None
-    if content is None and isinstance(choice, dict):
-        message_payload = choice.get("message") or {}
-        if isinstance(message_payload, dict):
-            content = message_payload.get("content")
-    if not content:
-        raise EmptyQuestionGenerationResponse(
-            "Eval question generation returned an empty message content. "
-            f"Raw response: {_response_excerpt(response)}"
-        )
-    return str(content)
-
-
-def _usage_from_response(response: Any) -> dict[str, int]:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return {}
-    if isinstance(usage, dict):
-        return {
-            "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
-            "output_tokens": int(usage.get("completion_tokens", 0) or 0),
-            "total_tokens": int(usage.get("total_tokens", 0) or 0),
-        }
-    return {
-        "input_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-        "output_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-    }
-
-
-def _response_excerpt(response: Any, *, limit: int = 4000) -> str:
-    if hasattr(response, "model_dump"):
-        payload = response.model_dump()
-    elif hasattr(response, "dict"):
-        payload = response.dict()
-    else:
-        payload = repr(response)
-    text = json.dumps(payload, ensure_ascii=False, default=str)
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...<truncated>"
-
-
-def _optional_int(value: Any) -> int | None:
-    if value is None or value == "":
-        return None
-    return int(value)

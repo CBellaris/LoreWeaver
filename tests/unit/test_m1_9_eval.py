@@ -7,12 +7,10 @@ import unittest
 
 from loreweaver.config import AppConfig
 from loreweaver.eval.corpus import build_chapter_corpus
-from loreweaver.eval.generator import (
-    EmptyQuestionGenerationResponse,
-    _chat_content_from_response,
-)
 from loreweaver.eval.metrics import chapter_ranking_from_retrieval_report, score_question
 from loreweaver.eval.question_set import load_question_set
+from loreweaver.model_services.errors import EmptyModelResponse
+from loreweaver.model_services.json_utils import chat_content_from_response
 from loreweaver.models.chapter import Chapter
 from loreweaver.models.document import Document
 from loreweaver.storage.sqlite_store import SQLiteStore
@@ -170,17 +168,17 @@ class M19EvalTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(
-            EmptyQuestionGenerationResponse,
+            EmptyModelResponse,
             "context length exceeded",
         ):
-            _chat_content_from_response(response)
+            chat_content_from_response(response, context="Eval question generation")
 
     def test_null_generation_response_has_actionable_error(self) -> None:
         with self.assertRaisesRegex(
-            EmptyQuestionGenerationResponse,
+            EmptyModelResponse,
             "null response",
         ):
-            _chat_content_from_response(None)
+            chat_content_from_response(None, context="Eval question generation")
 
 
 def _write_question_set() -> Path:

@@ -168,8 +168,23 @@ class OpenAICompatibleClient:
 
 def _uploaded_file_id(uploaded: Any) -> str:
     if isinstance(uploaded, dict):
-        return str(uploaded.get("id", ""))
-    return str(getattr(uploaded, "id", ""))
+        nested_data = uploaded.get("data")
+        if isinstance(nested_data, dict) and nested_data.get("id"):
+            return str(nested_data["id"])
+        if uploaded.get("id"):
+            return str(uploaded["id"])
+        raise ValueError("Provider file upload response did not include a file id.")
+
+    data = getattr(uploaded, "data", None)
+    if isinstance(data, dict) and data.get("id"):
+        return str(data["id"])
+    if data is not None and getattr(data, "id", None):
+        return str(getattr(data, "id"))
+    if getattr(uploaded, "id", None):
+        return str(getattr(uploaded, "id"))
+    if hasattr(uploaded, "model_dump"):
+        return _uploaded_file_id(uploaded.model_dump())
+    raise ValueError("Provider file upload response did not include a file id.")
 
 
 def _optional_str(value: Any) -> str | None:

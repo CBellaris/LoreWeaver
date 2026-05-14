@@ -1,4 +1,4 @@
-"""Resolve model service configuration from current and future config shapes."""
+"""Resolve model service configuration from the canonical service config."""
 
 from __future__ import annotations
 
@@ -57,17 +57,17 @@ def resolve_model_service(
     app_config: AppConfig | None = None,
 ) -> ModelServiceConfig:
     values = models_config.values
-    if values.get("services") or values.get("model_profiles"):
-        resolved = _resolve_new_style(values, service)
-    else:
-        resolved = _resolve_legacy(values, service)
+    resolved = _resolve_service(values, service)
     if app_config is not None:
         resolved = _apply_app_overrides(resolved, app_config)
     return resolved
 
 
-def _resolve_new_style(values: dict[str, Any], service: str) -> ModelServiceConfig:
-    service_values = dict(values.get("services", {}).get(service, {}))
+def _resolve_service(values: dict[str, Any], service: str) -> ModelServiceConfig:
+    services = values.get("services", {})
+    if service not in services:
+        raise ValueError(f"Model service is not configured: {service}")
+    service_values = dict(services[service])
     profile_name = service_values.pop("profile", None)
     profile_values: dict[str, Any] = {}
     if profile_name:
@@ -78,32 +78,21 @@ def _resolve_new_style(values: dict[str, Any], service: str) -> ModelServiceConf
     return _config_from_values(values=values, service=service, service_values=merged)
 
 
-def _resolve_legacy(values: dict[str, Any], service: str) -> ModelServiceConfig:
-    service_values = dict(values.get("models", {}).get(service, {}))
-    return _config_from_values(values=values, service=service, service_values=service_values)
-
-
 def _config_from_values(
     *,
     values: dict[str, Any],
     service: str,
     service_values: dict[str, Any],
 ) -> ModelServiceConfig:
-    provider_name = str(service_values.get("provider", _default_provider(service)))
+    if "provider" not in service_values:
+        raise ValueError(f"Model service {service} must define provider or profile.")
+    if "model" not in service_values:
+        raise ValueError(f"Model service {service} must define model or profile.")
+    provider_name = str(service_values["provider"])
     provider = _provider_from_values(values, provider_name)
     capability = str(service_values.get("capability", _default_capability(service)))
     pricing_values = dict(service_values.get("pricing", {}))
     batch_pricing_values = dict(service_values.get("batch_pricing", {}))
-    if not pricing_values:
-        pricing_values = {
-            "input_yuan_per_1k": service_values.get("input_yuan_per_1k", 0.0),
-            "output_yuan_per_1k": service_values.get("output_yuan_per_1k", 0.0),
-        }
-    if not batch_pricing_values:
-        batch_pricing_values = {
-            "input_yuan_per_1k": service_values.get("batch_input_yuan_per_1k", 0.0),
-            "output_yuan_per_1k": service_values.get("batch_output_yuan_per_1k", 0.0),
-        }
 
     expected_dimensions = service_values.get("expected_dimensions")
     if expected_dimensions is not None:
@@ -113,7 +102,7 @@ def _config_from_values(
         service=service,
         capability=capability,
         provider=provider,
-        model=str(service_values.get("model", service_values.get("name", ""))),
+        model=str(service_values["model"]),
         temperature=_optional_float(service_values.get("temperature")),
         max_output_tokens=_optional_int(service_values.get("max_output_tokens")),
         json_response_format=bool(service_values.get("json_response_format", False)),
@@ -126,7 +115,7 @@ def _config_from_values(
             input_yuan_per_1k=float(pricing_values.get("input_yuan_per_1k", 0.0)),
             output_yuan_per_1k=float(pricing_values.get("output_yuan_per_1k", 0.0)),
         ),
-        batch_model=_optional_str(service_values.get("batch_model", service_values.get("batch_name"))),
+        batch_model=_optional_str(service_values.get("batch_model")),
         batch_pricing=PricingConfig(
             input_yuan_per_1k=float(batch_pricing_values.get("input_yuan_per_1k", 0.0)),
             output_yuan_per_1k=float(batch_pricing_values.get("output_yuan_per_1k", 0.0)),
@@ -136,11 +125,16 @@ def _config_from_values(
 
 
 def _provider_from_values(values: dict[str, Any], provider_name: str) -> ProviderConfig:
-    provider_values = values.get("providers", {}).get(provider_name, {})
+    providers = values.get("providers", {})
+    if provider_name not in providers:
+        raise ValueError(f"Model provider is not configured: {provider_name}")
+    provider_values = providers[provider_name]
+    if "api_key_env" not in provider_values and provider_name not in {"mock", "noop"}:
+        raise ValueError(f"Model provider {provider_name} must define api_key_env.")
     return ProviderConfig(
         name=provider_name,
         adapter=str(provider_values.get("adapter", _default_adapter(provider_name))),
-        api_key_env=provider_values.get("api_key_env", _default_api_key_env(provider_name)),
+        api_key_env=provider_values.get("api_key_env"),
         base_url=provider_values.get("base_url"),
     )
 
@@ -177,16 +171,6 @@ def _apply_app_overrides(
     return service_config
 
 
-def _default_provider(service: str) -> str:
-    if service == "eval_question_generator":
-        return "deepseek"
-    if service == "reranker":
-        return "noop"
-    if service == "embedding":
-        return "siliconflow"
-    return "openai"
-
-
 def _default_capability(service: str) -> str:
     if service == "embedding":
         return "embedding"
@@ -201,15 +185,6 @@ def _default_adapter(provider: str) -> str:
     if provider == "siliconflow_rerank":
         return "http_rerank"
     return "openai_compatible"
-
-
-def _default_api_key_env(provider: str) -> str | None:
-    defaults = {
-        "openai": "OPENAI_API_KEY",
-        "deepseek": "DEEPSEEK_API_KEY",
-        "siliconflow": "SILICONFLOW_API_KEY",
-    }
-    return defaults.get(provider)
 
 
 def _optional_int(value: Any) -> int | None:

@@ -647,7 +647,7 @@ M1.8 已经从“能回答”走到“能校验引用编号”。但当前校验
 - 证据不足时是否允许无引用拒答，还是必须引用“证据不足的原因块”；
 - repair 是否应换用更严格的小模型/规则，而不是同一模型；
 - 是否引入 claim-level citation audit：抽取回答中的结论句，逐句验证引用；
-- `configs/default.yaml` 中 `qa.model` 与 `configs/models.yaml` 中 `models.qa.name` 的优先级是否需要统一，避免实验记录混乱；
+- `configs/default.yaml` 中 QA 运行参数与 `configs/models.yaml` 中 `services.qa` 的优先级是否需要统一，避免实验记录混乱；
 - 是否把最终 answer 输出为结构化 JSON，便于评估。
 
 当前倾向：
