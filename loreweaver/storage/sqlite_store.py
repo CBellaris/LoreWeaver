@@ -112,7 +112,6 @@ class SQLiteStore:
                     span_type TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     entities_json TEXT NOT NULL,
-                    topics_json TEXT NOT NULL,
                     salience_score REAL NOT NULL,
                     start_anchor_quote TEXT NOT NULL,
                     end_anchor_quote TEXT NOT NULL,
@@ -695,17 +694,16 @@ class SQLiteStore:
                 INSERT INTO spans (
                     span_id, document_id, chapter_id, window_id, span_index_in_window,
                     window_start, window_end, span_type, summary,
-                    entities_json, topics_json, salience_score, start_anchor_quote,
+                    entities_json, salience_score, start_anchor_quote,
                     end_anchor_quote, key_quote, span_start_idx,
                     span_end_idx, located_text, locator_confidence, locator_status, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(span_id) DO UPDATE SET
                     span_index_in_window=excluded.span_index_in_window,
                     span_type=excluded.span_type,
                     summary=excluded.summary,
                     entities_json=excluded.entities_json,
-                    topics_json=excluded.topics_json,
                     salience_score=excluded.salience_score,
                     start_anchor_quote=excluded.start_anchor_quote,
                     end_anchor_quote=excluded.end_anchor_quote,
@@ -728,7 +726,6 @@ class SQLiteStore:
                     span.span_type,
                     span.summary,
                     json.dumps(span.entities, ensure_ascii=False),
-                    json.dumps(span.topics, ensure_ascii=False),
                     span.salience_score,
                     span.start_anchor_quote,
                     span.end_anchor_quote,
@@ -1198,7 +1195,6 @@ def _reset_stale_extraction_tables(connection: sqlite3.Connection) -> None:
         "span_type",
         "summary",
         "entities_json",
-        "topics_json",
         "salience_score",
         "start_anchor_quote",
         "end_anchor_quote",
@@ -1210,7 +1206,7 @@ def _reset_stale_extraction_tables(connection: sqlite3.Connection) -> None:
         "locator_status",
         "created_at",
     }
-    stale_columns_present = bool({"micro_summary", "overlap_reason"} & span_columns)
+    stale_columns_present = bool({"micro_summary", "overlap_reason", "topics_json"} & span_columns)
     missing_required_columns = not required_columns.issubset(span_columns)
     if not stale_columns_present and not missing_required_columns:
         return
@@ -1250,7 +1246,6 @@ def _span_from_row(row: sqlite3.Row) -> Span:
         span_type=row["span_type"],
         summary=row["summary"],
         entities=json.loads(row["entities_json"]),
-        topics=json.loads(row["topics_json"]),
         salience_score=row["salience_score"],
         start_anchor_quote=row["start_anchor_quote"],
         end_anchor_quote=row["end_anchor_quote"],

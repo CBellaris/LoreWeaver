@@ -643,7 +643,6 @@ def _span_from_payload(
         span_type=payload.span_type if payload else "other",
         summary=payload.summary if payload else "",
         entities=payload.entities if payload else [],
-        topics=payload.topics if payload else [],
         salience_score=payload.salience_score if payload else 0.0,
         start_anchor_quote=payload.start_anchor_quote if payload else "",
         end_anchor_quote=payload.end_anchor_quote if payload else "",

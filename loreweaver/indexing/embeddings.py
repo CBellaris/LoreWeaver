@@ -18,7 +18,6 @@ def build_embedding_input(
     parts = [
         f"summary: {span.summary}",
         f"entities: {', '.join(span.entities)}",
-        f"topics: {', '.join(span.topics)}",
     ]
     if include_key_quote and span.key_quote:
         parts.append(f"key_quote: {span.key_quote}")

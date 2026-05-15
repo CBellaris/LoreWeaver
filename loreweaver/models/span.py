@@ -18,7 +18,6 @@ class Span:
     span_type: str
     summary: str
     entities: list[str]
-    topics: list[str]
     salience_score: float
     start_anchor_quote: str
     end_anchor_quote: str

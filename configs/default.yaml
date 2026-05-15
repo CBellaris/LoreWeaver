@@ -1,6 +1,6 @@
 project:
   name: "LoreWeaver"
-  stage: "M1.8"
+  stage: "M1"
   data_dir: "data"
 
 sample:
@@ -70,8 +70,7 @@ graph:
   use_embeddings: true
   scoring_weights:
     vector: 0.4
-    entity: 0.2
-    topic: 0.15
+    entity: 0.35
     bm25: 0.1
     chapter: 0.1
     salience: 0.05

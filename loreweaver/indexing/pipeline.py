@@ -314,7 +314,6 @@ def search_vector_index(
                 "span_end_idx": result.payload.get("span_end_idx"),
                 "summary": result.payload.get("summary"),
                 "entities": result.payload.get("entities", []),
-                "topics": result.payload.get("topics", []),
                 "located_text": spans_by_id.get(result.span_id).located_text
                 if result.span_id in spans_by_id
                 else "",
@@ -357,7 +356,6 @@ def search_bm25_index(
                 "span_end_idx": result.document.span_end_idx,
                 "summary": result.document.summary,
                 "entities": result.document.entities,
-                "topics": result.document.topics,
                 "located_text": spans_by_id.get(result.span_id).located_text
                 if result.span_id in spans_by_id
                 else "",

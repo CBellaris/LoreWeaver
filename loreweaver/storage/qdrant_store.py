@@ -188,7 +188,6 @@ def _payload_for_record(record: VectorRecord) -> dict[str, Any]:
         "span_type": span.span_type,
         "summary": span.summary,
         "entities": span.entities,
-        "topics": span.topics,
         "salience_score": span.salience_score,
         "span_start_idx": span.span_start_idx,
         "span_end_idx": span.span_end_idx,

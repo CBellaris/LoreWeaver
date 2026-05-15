@@ -209,9 +209,9 @@ class DebugInspector:
             like = f"%{query}%"
             clauses.append(
                 "(span_id LIKE ? OR summary LIKE ? "
-                "OR entities_json LIKE ? OR topics_json LIKE ?)"
+                "OR entities_json LIKE ?)"
             )
-            params.extend([like, like, like, like])
+            params.extend([like, like, like])
         params.append(limit)
         with _connect(storage_config.sqlite_path) as connection:
             rows = connection.execute(
@@ -509,7 +509,6 @@ def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _decode_span(row: sqlite3.Row) -> dict[str, Any]:
     payload = _row_dict(row)
     payload["entities"] = _loads(payload.pop("entities_json", "[]"))
-    payload["topics"] = _loads(payload.pop("topics_json", "[]"))
     return payload
 
 

@@ -52,8 +52,7 @@ class MemberCandidate:
 @dataclass(frozen=True)
 class GraphScoringWeights:
     vector: float = 0.4
-    entity: float = 0.2
-    topic: float = 0.15
+    entity: float = 0.35
     bm25: float = 0.1
     chapter: float = 0.1
     salience: float = 0.05
@@ -124,7 +123,6 @@ def build_m15_graph(
             GraphScoringWeights(
                 vector=0.0,
                 entity=weights.entity,
-                topic=weights.topic,
                 bm25=weights.bm25,
                 chapter=weights.chapter,
                 salience=weights.salience,
@@ -291,7 +289,6 @@ def build_center_span_clusters(
     effective_vectors = span_vectors or {}
     effective_weights = weights or GraphScoringWeights()
     entity_counts = Counter(entity for span in located_spans for entity in set(span.entities))
-    topic_counts = Counter(topic for span in located_spans for topic in set(span.topics))
     now = datetime.now(timezone.utc)
     by_type: dict[str, list[Span]] = defaultdict(list)
     for span in located_spans:
@@ -328,7 +325,6 @@ def build_center_span_clusters(
             min_members=min_members,
             span_vectors=effective_vectors,
             entity_counts=entity_counts,
-            topic_counts=topic_counts,
             weights=effective_weights,
         )
         if len(members) < min_members:
@@ -354,7 +350,7 @@ def build_center_span_clusters(
 
 def classify_cluster_type(span: Span) -> str:
     span_type = span.span_type.lower()
-    combined = " ".join([span.summary, *span.topics, *span.entities])
+    combined = " ".join([span.summary, *span.entities])
     if _contains_any(combined, ("地点", "地理", "城堡", "遗迹")):
         return "location"
     if _contains_any(combined, ("势力", "家族", "王国", "贵族")):
@@ -416,7 +412,6 @@ def _rank_member_candidates(
     min_members: int,
     span_vectors: dict[str, list[float]],
     entity_counts: Counter[str],
-    topic_counts: Counter[str],
     weights: GraphScoringWeights,
 ) -> list[MemberCandidate]:
     ranked = [
@@ -426,7 +421,6 @@ def _rank_member_candidates(
             preferred_type=preferred_type,
             span_vectors=span_vectors,
             entity_counts=entity_counts,
-            topic_counts=topic_counts,
             weights=weights,
         )
         for span in spans
@@ -456,7 +450,6 @@ def _score_member(
     preferred_type: str,
     span_vectors: dict[str, list[float]],
     entity_counts: Counter[str],
-    topic_counts: Counter[str],
     weights: GraphScoringWeights,
 ) -> MemberCandidate:
     reasons: list[str] = []
@@ -470,12 +463,6 @@ def _score_member(
         entity_counts,
         total_items=max(1, len(span_vectors) or sum(entity_counts.values()) or 1),
     )
-    topic_score, shared_topics = _weighted_overlap_score(
-        center.topics,
-        span.topics,
-        topic_counts,
-        total_items=max(1, len(span_vectors) or sum(topic_counts.values()) or 1),
-    )
     bm25_score = min(1.0, _lexical_overlap(center, span) / 20.0)
     chapter_score = _chapter_proximity_score(center, span)
     salience_score = max(0.0, min(1.0, span.salience_score))
@@ -483,7 +470,6 @@ def _score_member(
     component_scores = {
         "vector": round(vector_score, 6),
         "entity": round(entity_score, 6),
-        "topic": round(topic_score, 6),
         "bm25": round(bm25_score, 6),
         "chapter": round(chapter_score, 6),
         "salience": round(salience_score, 6),
@@ -492,7 +478,6 @@ def _score_member(
     score = (
         weights.vector * vector_score
         + weights.entity * entity_score
-        + weights.topic * topic_score
         + weights.bm25 * bm25_score
         + weights.chapter * chapter_score
         + weights.salience * salience_score
@@ -503,8 +488,6 @@ def _score_member(
         reasons.append("same_cluster_type")
     if shared_entities:
         reasons.append("shared_entities:" + ",".join(shared_entities[:4]))
-    if shared_topics:
-        reasons.append("shared_topics:" + ",".join(shared_topics[:4]))
     if chapter_score == 1.0:
         reasons.append("same_chapter")
     elif chapter_score >= 0.5:
@@ -525,24 +508,23 @@ def _score_member(
 
 def _cluster_name(cluster_type: str, center: Span, members: list[Span]) -> str:
     entity_counts: Counter[str] = Counter()
-    topic_counts: Counter[str] = Counter()
     for span in members:
         entity_counts.update(span.entities)
-        topic_counts.update(span.topics)
     label = CLUSTER_TYPE_LABELS.get(cluster_type, cluster_type)
     representative_entity = _representative_entity(cluster_type, entity_counts)
     if representative_entity:
         return f"{label}：{representative_entity}"
-    if topic_counts:
-        return f"{label}：{topic_counts.most_common(1)[0][0]}"
     return f"{label}：{center.summary}"
 
 
 def _cluster_summary(cluster_type: str, center: Span, members: list[Span]) -> str:
-    topics = Counter(topic for span in members for topic in span.topics).most_common(3)
-    topic_text = "、".join(topic for topic, _ in topics) if topics else center.summary
+    entity_counts: Counter[str] = Counter()
+    for span in members:
+        entity_counts.update(span.entities)
+    top_entities = entity_counts.most_common(3)
+    entity_text = "、".join(entity for entity, _ in top_entities) if top_entities else center.summary
     label = CLUSTER_TYPE_LABELS.get(cluster_type, cluster_type)
-    return f"{label}聚合，以中心 Span「{center.summary}」为锚点，成员主要覆盖：{topic_text}。"
+    return f"{label}聚合，以中心 Span「{center.summary}」为锚点，成员主要涉及：{entity_text}。"
 
 
 def _cluster_confidence(members: list[MemberCandidate]) -> float:
@@ -578,7 +560,6 @@ def _build_report(
             "weights": {
                 "vector": weights.vector,
                 "entity": weights.entity,
-                "topic": weights.topic,
                 "bm25": weights.bm25,
                 "chapter": weights.chapter,
                 "salience": weights.salience,
@@ -666,8 +647,7 @@ def _weights_from_config(graph_config: dict[str, Any]) -> GraphScoringWeights:
     raw_weights = graph_config.get("scoring_weights", {})
     weights = GraphScoringWeights(
         vector=float(raw_weights.get("vector", 0.4)),
-        entity=float(raw_weights.get("entity", 0.2)),
-        topic=float(raw_weights.get("topic", 0.15)),
+        entity=float(raw_weights.get("entity", 0.35)),
         bm25=float(raw_weights.get("bm25", 0.1)),
         chapter=float(raw_weights.get("chapter", 0.1)),
         salience=float(raw_weights.get("salience", 0.05)),
@@ -679,7 +659,6 @@ def _normalize_weights(weights: GraphScoringWeights) -> GraphScoringWeights:
     total = (
         weights.vector
         + weights.entity
-        + weights.topic
         + weights.bm25
         + weights.chapter
         + weights.salience
@@ -689,7 +668,6 @@ def _normalize_weights(weights: GraphScoringWeights) -> GraphScoringWeights:
     return GraphScoringWeights(
         vector=weights.vector / total,
         entity=weights.entity / total,
-        topic=weights.topic / total,
         bm25=weights.bm25 / total,
         chapter=weights.chapter / total,
         salience=weights.salience / total,
@@ -809,7 +787,7 @@ def _lexical_overlap(center: Span, span: Span) -> int:
 
 
 def _span_text(span: Span) -> str:
-    return "\n".join([span.summary, *span.entities, *span.topics])
+    return "\n".join([span.summary, *span.entities])
 
 
 def _chapter_number(chapter_id: str) -> int:

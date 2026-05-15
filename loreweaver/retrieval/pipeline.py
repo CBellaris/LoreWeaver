@@ -248,7 +248,6 @@ def _result_payload(result: RerankResult, candidate: UnionCandidate) -> dict[str
         "span_type": span.span_type,
         "summary": span.summary,
         "entities": span.entities,
-        "topics": span.topics,
         "key_quote": span.key_quote,
         "rerank_text_sha256": result.text_sha256,
     }

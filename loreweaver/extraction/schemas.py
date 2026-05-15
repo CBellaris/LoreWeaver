@@ -36,7 +36,6 @@ if BaseModel is not None:
         span_type: str = Field(default="other", max_length=40)
         summary: str = Field(min_length=1, max_length=500)
         entities: list[str] = Field(default_factory=list, max_length=30)
-        topics: list[str] = Field(default_factory=list, max_length=20)
         salience_score: float = Field(ge=0.0, le=1.0)
         start_anchor_quote: str = Field(min_length=1, max_length=160)
         end_anchor_quote: str = Field(min_length=1, max_length=160)
@@ -66,7 +65,7 @@ if BaseModel is not None:
             normalized = value.strip() or "other"
             return normalized if normalized in SPAN_TYPES else "other"
 
-        @field_validator("entities", "topics")
+        @field_validator("entities")
         @classmethod
         def _clean_list(cls, value: list[str]) -> list[str]:
             return _clean_string_list(value)
@@ -114,7 +113,6 @@ else:
         span_type: str = "other"
         summary: str = ""
         entities: list[str] = field(default_factory=list)
-        topics: list[str] = field(default_factory=list)
         salience_score: float = 0.0
         start_anchor_quote: str = ""
         end_anchor_quote: str = ""
@@ -143,7 +141,6 @@ else:
             object.__setattr__(self, "end_anchor_quote", end_anchor)
             object.__setattr__(self, "key_quote", self.key_quote.strip())
             object.__setattr__(self, "entities", _clean_string_list(self.entities))
-            object.__setattr__(self, "topics", _clean_string_list(self.topics))
 
         @classmethod
         def model_validate(cls, data: Any) -> "SpanCandidatePayload":
@@ -153,7 +150,6 @@ else:
                 span_type=str(data.get("span_type", "other")),
                 summary=str(data.get("summary", "")),
                 entities=list(data.get("entities", [])),
-                topics=list(data.get("topics", [])),
                 salience_score=float(data.get("salience_score", 0.0)),
                 start_anchor_quote=str(data.get("start_anchor_quote", "")),
                 end_anchor_quote=str(data.get("end_anchor_quote", "")),
@@ -166,7 +162,6 @@ else:
                 "span_type": self.span_type,
                 "summary": self.summary,
                 "entities": self.entities,
-                "topics": self.topics,
                 "salience_score": self.salience_score,
                 "start_anchor_quote": self.start_anchor_quote,
                 "end_anchor_quote": self.end_anchor_quote,

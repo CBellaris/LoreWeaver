@@ -19,7 +19,6 @@ class BM25Document:
     span_end_idx: int | None
     summary: str
     entities: list[str]
-    topics: list[str]
     key_quote: str
     text: str
     tokens: list[str]
@@ -57,7 +56,6 @@ class BM25Index:
                 span_end_idx=item["span_end_idx"],
                 summary=item["summary"],
                 entities=list(item["entities"]),
-                topics=list(item["topics"]),
                 key_quote=item["key_quote"],
                 text=item["text"],
                 tokens=list(item["tokens"]),
@@ -143,7 +141,6 @@ def _document_from_span(span: Span) -> BM25Document:
         for part in [
             span.summary,
             " ".join(span.entities),
-            " ".join(span.topics),
             span.key_quote,
         ]
         if part
@@ -156,7 +153,6 @@ def _document_from_span(span: Span) -> BM25Document:
         span_end_idx=span.span_end_idx,
         summary=span.summary,
         entities=span.entities,
-        topics=span.topics,
         key_quote=span.key_quote,
         text=text,
         tokens=tokenize_for_bm25(text),

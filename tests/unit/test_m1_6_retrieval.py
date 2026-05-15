@@ -149,7 +149,6 @@ def _spans(document_id: str) -> list[Span]:
             "塞西尔家族衰落",
             "高文发现塞西尔家族因为旧贵族内耗和边境压力逐渐衰落。",
             ["高文", "塞西尔家族"],
-            ["家族衰落", "边境压力"],
         ),
         (
             "span_cecil_2",
@@ -157,7 +156,6 @@ def _spans(document_id: str) -> list[Span]:
             "高文继承家族责任",
             "高文复苏后被视为塞西尔先祖，需要重新承担家族责任。",
             ["高文", "塞西尔家族"],
-            ["责任", "复苏"],
         ),
         (
             "span_magic_1",
@@ -165,7 +163,6 @@ def _spans(document_id: str) -> list[Span]:
             "法师道路旧规",
             "法师道路依赖旧时代知识，传承缺失导致规则变得混乱。",
             ["法师"],
-            ["力量体系", "旧时代知识"],
         ),
         (
             "span_location_1",
@@ -173,11 +170,10 @@ def _spans(document_id: str) -> list[Span]:
             "边境营地",
             "边境营地暴露了塞西尔领地资源不足的问题。",
             ["塞西尔领地"],
-            ["地点", "资源"],
         ),
     ]
     spans: list[Span] = []
-    for index, (span_id, chapter_id, _topic, summary, entities, topics) in enumerate(rows):
+    for index, (span_id, chapter_id, _topic, summary, entities) in enumerate(rows):
         spans.append(
             Span(
                 span_id=span_id,
@@ -190,7 +186,6 @@ def _spans(document_id: str) -> list[Span]:
                 span_type="faction" if "cecil" in span_id else "setting",
                 summary=summary,
                 entities=entities,
-                topics=topics,
                 salience_score=0.9 - index * 0.05,
                 start_anchor_quote=summary[:6],
                 end_anchor_quote=summary[-6:],

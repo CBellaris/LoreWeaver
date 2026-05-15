@@ -964,8 +964,6 @@ def _spans(args: argparse.Namespace) -> int:
         print(f"   summary: {_truncate(span.summary, 120)}")
         if span.entities:
             print(f"   entities: {', '.join(span.entities[:8])}")
-        if span.topics:
-            print(f"   topics: {', '.join(span.topics[:8])}")
     print("status: ok")
     return 0
 
@@ -1370,7 +1368,6 @@ def _print_graph_clusters(clusters: list[dict]) -> None:
                     "     scores: "
                     f"vector={components.get('vector', 0):.3f} "
                     f"entity={components.get('entity', 0):.3f} "
-                    f"topic={components.get('topic', 0):.3f} "
                     f"bm25={components.get('bm25', 0):.3f} "
                     f"chapter={components.get('chapter', 0):.3f} "
                     f"salience={components.get('salience', 0):.3f}"
